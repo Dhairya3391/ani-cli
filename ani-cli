@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version_number="4.10.1"
+version_number="4.10.2"
 
 # UI
 
@@ -214,10 +214,12 @@ get_episode_url() {
     # generate links into sequential files
     cache_dir="$(mktemp -d)"
     providers="1 2 3 4"
+    pids=""
     for provider in $providers; do
         generate_link "$provider" >"$cache_dir"/"$provider" &
+        pids="$pids $!"
     done
-    wait
+    wait $pids
     # select the link with matching quality
     links=$(cat "$cache_dir"/* | sort -g -r -s)
     rm -r "$cache_dir"
