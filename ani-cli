@@ -64,6 +64,7 @@ help_info() {
         Use VLC to play the video
       --mpvkt
         Use mpvKT to play the video (Android only)
+        Note: Disable "Save position on quit" in mpvKT settings to avoid resuming from previous episodes
       -V, --version
         Show the version of the script
       -h, --help
