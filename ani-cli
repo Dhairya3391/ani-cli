@@ -62,6 +62,8 @@ help_info() {
         Specify the video quality
       -v, --vlc
         Use VLC to play the video
+      --mpvkt
+        Use mpvKT to play the video (Android only)
       -V, --version
         Show the version of the script
       -h, --help
@@ -91,7 +93,8 @@ help_info() {
       %s --vlc cyberpunk edgerunners -q 1080p -e 4
       %s blue lock -e 5-6
       %s -e \"5 6\" blue lock
-    \n" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}"
+      %s --mpvkt anime -q 1080p -e 1
+    \n" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}"
     exit 0
 }
 
@@ -322,6 +325,7 @@ play_episode() {
             ;;
         android_mpv) nohup am start --user 0 -a android.intent.action.VIEW -d "$episode" -n is.xyz.mpv/.MPVActivity >/dev/null 2>&1 & ;;
         android_vlc) nohup am start --user 0 -a android.intent.action.VIEW -d "$episode" -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -e "title" "${allanime_title}Episode ${ep_no}" >/dev/null 2>&1 & ;;
+        android_mpvkt) nohup am start --user 0 -a android.intent.action.VIEW -d "$episode" -n live.mehiz.mpvkt/.MainActivity >/dev/null 2>&1 & ;;
         *iina*)
             [ -n "$subs_flag" ] && subs_flag="--mpv-${subs_flag#--}"
             [ -n "$refr_flag" ] && refr_flag="--mpv-${refr_flag#--}"
@@ -416,6 +420,12 @@ while [ $# -gt 0 ]; do
                 MINGW* | *WSL2*) player_function="vlc.exe" ;;
                 *ish*) player_function="iSH" ;;
                 *) player_function="vlc" ;;
+            esac
+            ;;
+        --mpvkt)
+            case "$(uname -a | cut -d " " -f 1,3-)" in
+                *ndroid*) player_function="android_mpvkt" ;;
+                *) die "mpvKT is only available on Android" ;;
             esac
             ;;
         -s | --syncplay)
