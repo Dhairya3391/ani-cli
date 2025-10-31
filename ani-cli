@@ -273,7 +273,9 @@ process_hist_entry() {
 
 update_history() {
     if grep -q -- "$id" "$histfile"; then
-        grep -v "	${id}	" "$histfile" >"${histfile}.new"
+        while read -r ep_no_old id_old title_old; do
+            [ "$id_old" != "$id" ] && printf "%s\t%s\t%s\n" "$ep_no_old" "$id_old" "$title_old"
+        done <"$histfile" >"${histfile}.new"
         printf "%s\t%s\t%s\n" "$ep_no" "$id" "$title" >>"${histfile}.new"
     else
         cp "$histfile" "${histfile}.new"
