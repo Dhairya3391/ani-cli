@@ -463,14 +463,19 @@ get_episode_url() {
     resp="$(process_response "$api_resp" | tr '{}' '\n' | sed 's|\\u002F|\/|g;s|\\||g' | sed -nE 's|.*sourceUrl":"([^"]*)".*sourceName":"([^"]*)".*|\2 :\1|p')"
     # generate links into sequential files
     cache_dir="$(mktemp -d)"
-    #providers="1 2 3 4 5"
-    providers="1 2 3 4"
+    # Prefer direct providers. MP4Upload is a fallback because it is sometimes the
+    # only source, but frequently returns no playable URL.
+    providers="1 2 3"
     for provider in $providers; do
         generate_link "$provider" >"$cache_dir"/"$provider" &
     done
     wait
     # select the link with matching quality
     links=$(cat "$cache_dir"/* | sort -g -r -s)
+    if [ -z "$links" ]; then
+        generate_link 4 >"$cache_dir"/4
+        links=$(cat "$cache_dir"/* | sort -g -r -s)
+    fi
     rm -r "$cache_dir"
     select_quality "$quality"
     if printf "%s" "$ep_list" | grep -q "^$ep_no$"; then
@@ -642,11 +647,11 @@ play() {
 agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0"
 allanime_refr="https://youtu-chan.com"
 allanime_base="allanime.day"
-allanime_api="https://api.allanime.day"
+allanime_api="https://api.mkissa.net"
 allanime_key="f34fa715e2958b8c1ebc6efa4d089acd8f196d8b83d4b6201586c00c8a52e4a8"
 allanime_query_hash="f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0"
 allanime_epoch="6884"
-allanime_build_id="61"
+allanime_build_id="63"
 mode="${ANI_CLI_MODE:-sub}"
 download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"
 log_episode="${ANI_CLI_LOG:-1}"
