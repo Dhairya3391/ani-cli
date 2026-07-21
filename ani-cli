@@ -453,30 +453,12 @@ get_filemoon_links() {
     printf "\033[1;32m%s\033[0m Links Fetched\n" "Filemoon" 1>&2
 }
 
-fetch_bootstrap() {
-    bootstrap_json="$(curl -sS -A "$agent" -e "$allanime_refr" -H "x-build-id: $allanime_build_id" "${allanime_api}/client-crypto/v1/bootstrap?buildId=$allanime_build_id" 2>/dev/null)"
-    allanime_epoch="$(printf '%s' "$bootstrap_json" | sed -nE 's|.*"epoch":([0-9]+).*|\1|p')"
-    allanime_partb="$(printf '%s' "$bootstrap_json" | sed -nE 's|.*"partB":"([^"]*)".*|\1|p')"
-    [ -z "$allanime_epoch" ] || [ -z "$allanime_partb" ] && die "Failed to fetch bootstrap configuration"
-}
-
-derive_key() {
-    partb_hex="$(printf '%s' "$allanime_partb" | base64 -d 2>/dev/null | od -An -tx1 | tr -d ' \n')"
-    allanime_key="$(xor_hex "$partb_hex" "$allanime_mask")"
-}
-
-derive_key_from_partb() {
-    # Public wrapper: fetch bootstrap then derive key
-    fetch_bootstrap
-    derive_key
-}
-
 # gets embed urls, collects direct links into provider files, selects one with desired quality into $episode
 get_episode_url() {
     query_vars="{\"showId\":\"$id\",\"translationType\":\"$mode\",\"episodeString\":\"$ep_no\"}"
     query_ext="{\"persistedQuery\":{\"version\":1,\"sha256Hash\":\"$allanime_query_hash\"}, \"aaReq\":\"$(get_aa_req)\"}"
 
-    api_resp="$(curl -e "$allanime_refr" -sG -A "$agent" -H "Origin: ${allanime_refr}" -H "x-build-id: $allanime_build_id" "${allanime_api}/api" --data-urlencode "variables=${query_vars}" --data-urlencode "extensions=${query_ext}")"
+    api_resp="$(curl -e "$allanime_refr" -sG -A "$agent" -H "Origin: https://mkissa.to" -H "x-build-id: $allanime_build_id" "${allanime_api}/api" --data-urlencode "variables=${query_vars}" --data-urlencode "extensions=${query_ext}")"
 
     resp="$(process_response "$api_resp" | tr '{}' '\n' | sed 's|\\u002F|\/|g;s|\\||g' | sed -nE 's|.*sourceUrl":"([^"]*)".*sourceName":"([^"]*)".*|\2 :\1|p')"
     # generate links into sequential files
@@ -658,15 +640,13 @@ play() {
 
 # setup
 agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0"
-allanime_refr="https://mkissa.to"
+allanime_refr="https://youtu-chan.com"
 allanime_base="allanime.day"
-allanime_api="https://api.mkissa.net"
-allanime_key=""
-allanime_query_hash="d405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec"
-allanime_epoch=""
-allanime_build_id="51"
-allanime_partb=""
-allanime_mask="fe3bfee62898aaf5bbb0dbfed5f1cb33a59faab4ca5036885a42119a56429129"
+allanime_api="https://api.allanime.day"
+allanime_key="f34fa715e2958b8c1ebc6efa4d089acd8f196d8b83d4b6201586c00c8a52e4a8"
+allanime_query_hash="f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0"
+allanime_epoch="6884"
+allanime_build_id="61"
 mode="${ANI_CLI_MODE:-sub}"
 download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"
 log_episode="${ANI_CLI_LOG:-1}"
@@ -693,9 +673,6 @@ histfile="$hist_dir/ani-hsts"
 [ ! -f "$histfile" ] && : >"$histfile"
 search="${ANI_CLI_DEFAULT_SOURCE:-scrape}"
 branch="${ANI_CLI_BRANCH:-master}"
-
-# Fetch bootstrap config and derive encryption key
-derive_key_from_partb
 
 while [ $# -gt 0 ]; do
     case "$1" in
