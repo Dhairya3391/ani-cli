@@ -165,7 +165,7 @@ async function main() {
   if (!dm) throw new Error("MISSING dep map");
   const deps = dm[1].split(",").map(s => s.replace(/"/g, "").trim());
 
-  // Find crypto chunk (contains qd="... and kr=yt(...))
+  // Find crypto chunk (contains client-crypto/v1/bootstrap)
   const chunkUrls = deps.filter(d => d.endsWith(".js") && d.includes("chunks/")).map(d => new URL(d, appUrl).href);
   const aborter = new AbortController();
   let js;
@@ -173,7 +173,7 @@ async function main() {
     js = await Promise.any(chunkUrls.map(async (url) => {
     const r = await gf(url, {}, aborter.signal);
     const text = await r.text();
-    if (text.includes('qd="') && text.includes("kr=yt(")) return text;
+    if (text.includes("client-crypto/v1/bootstrap") || text.includes('"queryHash"')) return text;
     throw new Error("not the crypto chunk");
     }));
   } finally {
@@ -183,11 +183,11 @@ async function main() {
   if (!js) throw new Error("MISSING crypto chunk");
   console.log("   size:", js.length);
 
-  const mask = js.match(/\bqd="([a-f0-9]+)"/);
+  const mask = js.match(/\bBa\s*=\s*(?:\w+\([^)]+\)\s*!==\s*"string"\s*\?\s*)?"([a-f0-9]{64})"/);
   if (!mask) throw new Error("MISSING mask");
   console.log("   mask:", mask[1]);
 
-  const kr = js.match(/kr=yt\(\d+\)!==["']string["']\?["'](\d+)["']:["']["']/);
+  const kr = js.match(/\bln\s*=\s*"(\d+)"/);
   if (!kr) throw new Error("MISSING buildId");
   const buildId = kr[1];
   console.log("   buildId:", buildId);
@@ -200,16 +200,14 @@ async function main() {
   // Find templates: by varName, fallback to content anchor
   const t = {};
   const searches = [
-    { k: "pc", vn: "pc", ca: "englishName\nnativeName\nslugTime" },
-    { k: "qt", vn: "qt", ca: 'tbObj {\n  u\n  sm\n  md\n  ts' },
-    { k: "xa", vn: "xa", ca: "thumbnail\n${qt}" },
-    { k: "lO", vn: null, ca: "query(\n$showId: String!" },
+    { k: "pc", vn: null, ca: "englishName\nnativeName\nslugTime" },
+    { k: "qt", vn: null, ca: 'tbObj {\n  u\n  sm\n  md\n  ts' },
+    { k: "Ca", vn: null, ca: "lastEpisodeInfo\nlastEpisodeDate" },
   ];
   for (const s of searches) t[s.k] = findTpl(js, s.vn, s.ca);
 
   t.Or = findFalsy(js, "Or");
   if (!t.Or) {
-    // Fallback: find Or by content and construct the function
     const oi = js.indexOf("# ranks:[Object]");
     if (oi >= 0) {
       const bt = js.lastIndexOf("`", oi);
@@ -217,7 +215,7 @@ async function main() {
       if (bt >= 0 && be > bt) t.Or = `(()=>${js.slice(bt, be + 1)})`;
     }
   }
-  if (!t.lO) t.lO = findFunc(js, "lO", "query(\n$showId: String!");
+  if (!t.lO) t.lO = findFunc(js, null, "query(\n$showId: String!");
 
   const missing = Object.entries(t).filter(([, v]) => !v).map(([k]) => k);
   if (missing.length) throw new Error("MISSING templates: " + missing.join(", "));
@@ -227,9 +225,9 @@ async function main() {
   let queryHash;
   try {
     const fn = new Function([
-      `const pc = ${t.pc};`,
-      `const qt = ${t.qt};`,
-      `const xa = ${t.xa};`,
+      `const gc = ${t.pc};`,
+      `const Bt = ${t.qt};`,
+      `const Ca = ${t.Ca};`,
       `const Or = ${t.Or};`,
       `const lO = () => ${t.lO};`,
       `return lO();`,
