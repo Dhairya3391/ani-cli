@@ -139,17 +139,52 @@ cleanup() {
     [ "$player_function" = "android_mpv" ] && : > "/storage/emulated/0/mpv/mpv.config.mp4"
     printf "\033[0m"
     rm -f "${histfile}.new"
-    [ -n "$allanime_key" ] && [ -n "$allanime_epoch" ] && [ -f "$script_self" ] && [ -w "$script_self" ] && sed "s|^allanime_key=.*|allanime_key='$allanime_key'|; s|^allanime_epoch=.*|allanime_epoch='$allanime_epoch'|; s|^allanime_build_id=.*|allanime_build_id='$allanime_build_id'|; s|^allanime_query_hash=.*|allanime_query_hash='$allanime_query_hash'|" "$script_self" > "${script_self}.tmp" 2> /dev/null && mv "${script_self}.tmp" "$script_self" 2> /dev/null && chmod +x "$script_self" 2> /dev/null
+    [ -n "$allanime_key" ] && [ -n "$allanime_epoch" ] && [ -f "$script_self" ] && [ -w "$script_self" ] && sed "s|^allanime_key=.*|allanime_key='$allanime_key'|; s|^allanime_epoch=.*|allanime_epoch='$allanime_epoch'|; s|^allanime_build_id=.*|allanime_build_id='$allanime_build_id'|; s|^allanime_query_hash=.*|allanime_query_hash='$allanime_query_hash'|; s|^allanime_lane=.*|allanime_lane='$allanime_lane'|" "$script_self" > "${script_self}.tmp" 2> /dev/null && mv "${script_self}.tmp" "$script_self" 2> /dev/null && chmod +x "$script_self" 2> /dev/null
+}
+
+generate_epoch() {
+    now_ms=$(($(date +%s) * 1000))
+    epoch=$((now_ms / 259200000))
+    if [ $((now_ms - epoch * 259200000)) -lt 86400000 ] && [ "$epoch" -gt 0 ]; then
+        printf '%s' $((epoch - 1))
+    else
+        printf '%s' "$epoch"
+    fi
+}
+
+generate_mask() {
+    key_hex=""
+    block=0
+    for b64 in "10d13/213hI=" "XdTA6FaAQSo=" "KRCUT9lZh1o=" "Aj3ASCIDMnw="; do
+        byte=0
+        # shellcheck disable=SC2046
+        for embedded in $(printf '%s' "$b64" | base64 -d | od -An -tu1); do
+            index=$((block * 8 + byte))
+            c=$(printf '%s' "$allanime_build_id" | cut -c$(($((index % ${#allanime_build_id})) + 1)))
+            ascii=$(LC_CTYPE=C printf '%s' "$c" | od -An -tu1 | tr -d '[:space:]')
+            build_mask_byte=$((ascii ^ (((index * 17) + 31) & 255)))
+            tweak=$((((block * 41) + (byte * 7)) & 255))
+            value=$((embedded ^ build_mask_byte ^ tweak))
+            key_hex="${key_hex}$(printf '%02x' "$value")"
+            byte=$((byte + 1))
+        done
+        block=$((block + 1))
+    done
+    printf '%s' "$key_hex"
+}
+
+generate_aa_boot() {
+    hmac_key_hex=$(
+        printf 'aa-boot:%s' "$allanime_build_id" |
+            openssl dgst -sha256 -mac HMAC -macopt "hexkey:$allanime_mask" -binary | od -An -tx1 -v |
+            tr -d ' \n'
+    ) || return 1
+    payload="${allanime_build_id}:mkissa:mkissa.to:${allanime_epoch}${allanime_lane:+:$allanime_lane}"
+    printf '%s' "$payload" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$hmac_key_hex" | sed 's/^.*= //'
 }
 
 fetch_keys() {
     html="$(curl -e "$allanime_refr" -s --max-time 5 "$allanime_refr" -A "$agent")" || return 0
-    crypto="$(printf '%s' "$html" | sed -nE 's|.*window\.__aaCrypto[[:space:]]*=[[:space:]]*({[^;]+});.*|\1|p')"
-    [ -z "$crypto" ] && return 0
-    epoch="$(printf '%s' "$crypto" | sed -nE 's|.*"epoch"[[:space:]]*:[[:space:]]*([0-9]+).*|\1|p')"
-    partB="$(printf '%s' "$crypto" | sed -nE 's|.*"partB"[[:space:]]*:[[:space:]]*"([^"]*)".*|\1|p')"
-    [ -z "$epoch" ] || [ -z "$partB" ] && return 0
-    [ "$epoch" = "$allanime_epoch" ] && [ -n "$allanime_key" ] && return 0
     app_url="$(printf '%s' "$html" | sed -nE 's|.*import\("([^"]+entry/app\.[^"]+\.js)"\).*|\1|p' | head -1)"
     [ -z "$app_url" ] && return 0
     app_js="$(curl -e "$allanime_refr" -s --max-time 10 "$app_url" -A "$agent")" || return 0
@@ -157,16 +192,24 @@ fetch_keys() {
     chunk_base="$(printf '%s' "$app_url" | sed 's|entry/[^/]*$||')chunks/"
     chunks="$(printf '%s' "$app_js" | grep -oE 'chunks/[a-zA-Z0-9._-]+\.js' | sed 's|chunks/||' | sort -u)"
     [ -z "$chunks" ] && rm -rf "$cache" && return 0
-    printf '%s\n' "$chunks" | xargs -P 8 -n 1 -I{} curl -s --compressed --max-time 8 "${chunk_base}{}" -A "$agent" > "$cache/{}" 2>/dev/null
-    mask=""
-    for f in "$cache"/*; do
-        [ -f "$f" ] && [ -s "$f" ] || continue
-        m="$(grep -E 'Ba=' "$f" | grep -oE '[a-f0-9]{64}' | head -1)"
-        [ -n "$m" ] && mask="$m" && break
+    for c in $chunks; do
+        curl -s --compressed --max-time 8 "${chunk_base}${c}" -A "$agent" > "$cache/$c" 2>/dev/null &
     done
-    [ -z "$mask" ] && rm -rf "$cache" && return 0
-    bid="$(grep -oE 'ln="[0-9]+"' "$f" | sed 's|ln="||; s|"||')"
-    [ -n "$bid" ] && allanime_build_id="$bid"
+    wait
+    crypto_js=""
+    for f in "$cache"/*; do
+        [ -s "$f" ] || continue
+        if grep -q 'client-crypto' -- "$f" 2>/dev/null; then
+            crypto_js=$(cat "$f")
+            break
+        fi
+    done
+    [ -z "$crypto_js" ] && rm -rf "$cache" && return 0
+    bid="$(printf '%s' "$crypto_js" | sed -n 's/.*!=="string"?"\([0-9]\+\)".*/\1/p' | head -1)"
+    lane="$(printf '%s' "$crypto_js" | sed -n 's/.*const ..="\(k[0-9]\+\)".*/\1/p' | head -1)"
+    [ -z "$bid" ] || [ -z "$lane" ] && rm -rf "$cache" && return 0
+    allanime_build_id="$bid"
+    allanime_lane="$lane"
 
     # derive query_hash from the crypto chunk templates
     # uses perl to extract template literals and substitute expressions
@@ -202,29 +245,37 @@ fetch_keys() {
         my $Ca = tpl("lastEpisodeInfo\nlastEpisodeDate");
         my $Or = falsy();
         my $lO = func_lO();
-        # string-substitute (equivalent to JS template literal evaluation)
         my $Ca_r = $Ca;
         $Ca_r =~ s/\$\{gc\}/$gc/g;
+        $Ca_r =~ s/\$\{\$c\}/$gc/g;
+        $Ca_r =~ s/\$\{qt\}/$Bt/g;
         $Ca_r =~ s/\$\{Bt\}/$Bt/g;
         my $q = $lO;
         $q =~ s/\$\{Ca\}/$Ca_r/g;
+        $q =~ s/\$\{Pa\}/$gc/g;
+        $q =~ s/\$\{gc\}/$gc/g;
+        $q =~ s/\$\{qt\}/$Bt/g;
         $q =~ s/\$\{Bt\}/$Bt/g;
         $q =~ s/\$\{Or\(\)\}/$Or/g;
         $q =~ s/\$\{Or\}/$Or/g;
         print $q;
-        print "X";   # sentinel to preserve trailing newline through $()
-    ' < "$f")" && qh="$(printf '%s' "${qh_query%X}" | shasum -a 256 | awk '{print $1}')" && [ -n "$qh" ] && allanime_query_hash="$qh"
+        print "X";
+    ' < "$f")" && allanime_episode_query="$(printf '%s' "${qh_query%X}")" && qh="$(printf '%s' "$allanime_episode_query" | shasum -a 256 | awk '{print $1}')" && [ -n "$qh" ] && allanime_query_hash="$qh"
 
     rm -rf "$cache"
-    pad=""
-    case $((${#partB} % 4)) in
-        2) pad="==" ;;
-        3) pad="=" ;;
-    esac
-    partB_hex="$(printf '%s%s' "$partB" "$pad" | tr -- '-_' '+/' | base64 -d 2> /dev/null | od -A n -t x1 | tr -d ' \n')"
+
+    allanime_epoch="$(generate_epoch)"
+    allanime_mask="$(generate_mask)"
+    allanime_aa_boot="$(generate_aa_boot)"
+
+    # bootstrap from API to get live partB
+    bootstrap="$(curl -e "$allanime_refr" -s --max-time 10 -H "x-build-id: $allanime_build_id" -H "x-aa-boot: $allanime_aa_boot" "${allanime_api}/client-crypto/v1/bootstrap?buildId=${allanime_build_id}${allanime_lane:+\&k=$allanime_lane}" -A "$agent")" || return 0
+    partB="$(printf '%s' "$bootstrap" | sed -nE 's|.*"partB":"([^"]*)".*|\1|p')"
+    [ -z "$partB" ] && return 0
+
+    partB_hex="$(printf '%s' "$partB" | base64 -d 2> /dev/null | od -A n -t x1 | tr -d ' \n')"
     [ -z "$partB_hex" ] && return 0
-    allanime_epoch="$epoch"
-    allanime_key="$(xor_hex "$partB_hex" "$mask")"
+    allanime_key="$(xor_hex "$partB_hex" "$allanime_mask")"
 }
 
 # fetch query hash from a serverless endpoint (e.g. Vercel Fluid function)
@@ -477,7 +528,7 @@ ghash() {
 get_aa_req() {
     ts="$(($(date +%s) / 300 * 300 * 1000))"
     payload_iv="$allanime_epoch:$allanime_build_id:$allanime_query_hash:$ts"
-    payload="{\"v\":1,\"ts\":$ts,\"epoch\":$allanime_epoch,\"buildId\":\"$allanime_build_id\",\"qh\":\"$allanime_query_hash\"}"
+    payload="{\"v\":1,\"ts\":$ts,\"epoch\":$allanime_epoch,\"buildId\":\"$allanime_build_id\",\"qh\":\"$allanime_query_hash\",\"k\":\"$allanime_lane\"}"
 
     iv_hex="$(printf '%s' "$payload_iv" | openssl dgst -sha256 -binary | dd bs=1 count=12 2> /dev/null | od -An -tx1 | tr -d ' \n')"
     payload_hex="$(printf '%s' "$payload" | od -An -tx1 | tr -d ' \n')"
@@ -504,7 +555,7 @@ get_aa_req() {
         hex_to_bin "$iv_hex"
         hex_to_bin "$ct_hex"
         hex_to_bin "$tag"
-    ) | base64 -w 0
+    ) | base64 | tr -d '\n'
 }
 
 b64url_to_hex() {
@@ -596,11 +647,15 @@ get_filemoon_links() {
 # gets embed urls, collects direct links into provider files, selects one with desired quality into $episode
 get_episode_url() {
     query_vars="{\"showId\":\"$id\",\"translationType\":\"$mode\",\"episodeString\":\"$ep_no\"}"
-    query_ext="{\"persistedQuery\":{\"version\":1,\"sha256Hash\":\"$allanime_query_hash\"}, \"aaReq\":\"$(get_aa_req)\"}"
+    query_ext="{\"persistedQuery\":{\"version\":1,\"sha256Hash\":\"$allanime_query_hash\"},\"k\":\"$allanime_lane\",\"aaReq\":\"$(get_aa_req)\"}"
 
-    api_resp="$(curl -e "$allanime_refr" -sG --max-time 10 -A "$agent" -H "Origin: $allanime_refr" "${allanime_api}/api" --data-urlencode "variables=${query_vars}" --data-urlencode "extensions=${query_ext}")"
+    if [ -n "$allanime_episode_query" ]; then
+        api_resp="$(curl -e "$allanime_refr" -sG --max-time 10 -A "$agent" -H "Origin: $allanime_refr" -H "x-build-id: $allanime_build_id" "${allanime_api}/api" --data-urlencode "query=$allanime_episode_query" --data-urlencode "variables=${query_vars}" --data-urlencode "extensions=${query_ext}")"
+    else
+        api_resp="$(curl -e "$allanime_refr" -sG --max-time 10 -A "$agent" -H "Origin: $allanime_refr" -H "x-build-id: $allanime_build_id" "${allanime_api}/api" --data-urlencode "variables=${query_vars}" --data-urlencode "extensions=${query_ext}")"
+    fi
 
-    resp="$(process_response "$api_resp" | tr '{}' '\n' | sed 's|\\u002F|\/|g;s|\\||g' | sed -nE 's|.*sourceUrl":"([^"]*)".*sourceName":"([^"]*)".*|\2 :\1|p')"
+    resp="$(process_response "$api_resp" | LC_ALL=C tr '{}' '\n' 2>/dev/null | sed 's|\\u002F|\/|g;s|\\||g' | sed -nE 's|.*sourceUrl":"([^"]*)".*sourceName":"([^"]*)".*|\2 :\1|p')"
     # generate links into sequential files
     cache_dir="$(mktemp -d)"
     providers="1 2 3 4"
@@ -785,11 +840,13 @@ agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefo
 allanime_refr="https://mkissa.to"
 allanime_base="allanime.day"
 allanime_api="https://api.mkissa.net"
-allanime_key='ff102360a5065bb72fc128f7efa5042dbf4db582e5c58754078265926a76bfd8'
-allanime_query_hash='f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0'
+allanime_key='a55ce35d83c1417fdfec0192c2b847eeae58d5bbb331a179d293aac40c035795'
+allanime_query_hash='b1dcc6c87826ae90f8f136e9dcda62eddac70e0be003881ac3836d10ad85ad7d'
 allanime_query_hash_url=""
-allanime_epoch='6885'
-allanime_build_id='64'
+allanime_episode_query=""
+allanime_lane=''
+allanime_epoch='6886'
+allanime_build_id='70'
 case "$0" in /*) script_self="$0" ;; *) script_self="$(pwd)/${0#./}" ;; esac
 mode="${ANI_CLI_MODE:-sub}"
 download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"

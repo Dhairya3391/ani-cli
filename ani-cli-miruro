@@ -1,0 +1,622 @@
+#!/bin/sh
+
+version_number="5.0.0-miruro"
+
+# Miruro API config
+CIPHERS='ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
+TLS13_CIPHERS='TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
+UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+# Provider priority (best = first)
+PROVIDER_PRIORITY="pewe,moo,ally,bee,bonk,kiwi,hop"
+
+branch="${ANI_CLI_BRANCH:-master}"
+COOKIE_JAR="/tmp/ani-cli-cookies-$$"
+FAILED_URLS="/tmp/ani-cli-failed-$$"
+
+# UI
+
+menu() {
+    case "$menu_program" in
+        fzf) fzf --reverse --cycle --prompt "$1" $2 $3 ;;
+        rofi) rofi -sort -dmenu -i -p "$1" $2 $3 ;;
+        dmenu) dmenu -p "$1" $3 ;;
+        *) "$menu_program" $3 "$1" ;;
+    esac
+}
+
+nth() {
+    _stdin=$(cat -)
+    [ -z "$_stdin" ] && exit 1
+    _line_count=$(printf "%s\n" "$_stdin" | wc -l | tr -d "[:space:]")
+    [ "$_line_count" -eq 1 ] && printf "%s" "$_stdin" | cut -f2,3 && return 0
+    prompt="$1"
+    [ $# -ne 1 ] && _multi_flag="$2"
+    _line=$(printf "%s" "$_stdin" | cut -f1,3 | tr '\t' ' ' | menu "$prompt" "$_multi_flag" "$menu_extra_flags" | awk '{print $1}')
+    _line_start=$(printf "%s" "$_line" | head -n1)
+    _line_end=$(printf "%s" "$_line" | tail -n1)
+    [ -n "$_line" ] || exit 1
+    if [ "$_line_start" = "$_line_end" ]; then
+        printf "%s" "$_stdin" | grep -E '^'"${_line}"'($|[[:space:]])' | cut -f2,3 || exit 1
+    else
+        printf "%s" "$_stdin" | sed -n '/^'"${_line_start}"'$/,/^'"${_line_end}$"'/p' || exit 1
+    fi
+}
+
+die() {
+    printf "\33[2K\r\033[1;31m%s\033[0m\n" "$*" >&2
+    exit 1
+}
+
+info() {
+    printf "\33[2K\r\033[1;34m%s\033[0m\n" "$*"
+}
+
+warn() {
+    printf "\33[2K\r\033[1;33m%s\033[0m\n" "$*" >&2
+}
+
+spin() {
+    _msg="$1"; shift
+    _tmpf=$(mktemp /tmp/ani-cli-spin-XXXXXX) 2>/dev/null
+    _tmpf="${_tmpf:-/tmp/ani-cli-spin-$$}"
+    ( "$@"; echo "$?" > "$_tmpf" ) &
+    _pid=$!
+    while [ ! -s "$_tmpf" ] 2>/dev/null; do
+        for _c in '|' '/' '-' '\'; do
+            printf "\r[%c] %s" "$_c" "$_msg" >&2
+            sleep 0.1
+        done
+    done
+    wait $_pid 2>/dev/null
+    _exit_code=$(cat "$_tmpf" 2>/dev/null || echo 1)
+    rm -f "$_tmpf"
+    printf "\33[2K\r" >&2
+    return "$_exit_code"
+}
+
+help_info() {
+    printf "
+    Usage:
+    %s [options] [query]
+    Options:
+      -c, --continue       Continue watching from history
+      -d, --download       Download instead of playing
+      -D, --delete         Delete history
+      -l, --logview        Show logs
+      -s, --syncplay       Use Syncplay to watch with friends
+      -q, --quality        Video quality (best/worst/720p/1080p)
+      -S, --select-nth     Select nth search result
+      -V, --version        Show version
+      -h, --help           Show this help
+      -e, --episode, -r, --range  Episode number or range
+      --dub                Play dubbed version
+      --rofi               Use rofi menu
+      --dmenu              Use dmenu menu
+      --skip               Use ani-skip to skip intros (mpv only)
+      --no-detach          Don't detach player
+      --exit-after-play    Exit after playing
+      -U, --update         Update the script
+    Examples:
+      %s one piece
+      %s -q 720p banana fish
+      %s --skip one piece
+    \n" "${0##*/}" "${0##*/}" "${0##*/}" "${0##*/}"
+    exit 0
+}
+
+version_info() {
+    printf "%s\n" "$version_number"
+    exit 0
+}
+
+# Bookkeeping
+
+dep_ch() {
+    command -v "$1" >/dev/null || die "Program $1 not found. Please install it."
+}
+
+dep_ch_failover() {
+    [ -z "$1" ] && return 1
+    prog=$(printf "%s" "$1" | cut -d"," -f 1)
+    rest=$(printf "%s" "$1" | cut -s -d"," -f 2-)
+    command -v "$prog" >/dev/null 2>&1 && printf "%s" "$prog" && return 0
+    [ -e "$prog" ] && printf "%s" "$prog" && return 0
+    dep_ch_failover "$rest"
+}
+
+cleanup() {
+    tput sgr0
+    rm -f "${histfile}.new"
+    rm -f /tmp/ani-cli-$$-*
+    rm -f "$COOKIE_JAR" "$FAILED_URLS"
+}
+
+update_script() {
+    info "[branch:$branch] Checking for update..."
+    _update=$(curl --fail-with-body -sL -A "$UA" "https://raw.githubusercontent.com/pystardust/ani-cli/$branch/ani-cli") || die "[branch:$branch] Connection error"
+    printf "%s" "$_update" | grep -q "^version_number" || die "[branch:$branch] Invalid response"
+    _update=$(printf "%s\n" "$_update" | diff -u "$0" -)
+    if [ -z "$_update" ]; then
+        info "[branch:$branch] Script is up to date"
+    else
+        printf "%s\n" "$_update" | patch "$0" - && info "[branch:$branch] Script has been updated" || die "[branch:$branch] Can't update"
+    fi
+    exit 0
+}
+
+# SCRAPING (Miruro backend)
+
+pipe() {
+    _payload="$1"
+    _e=$(printf '%s' "$_payload" | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+    curl -s --max-time 15 --compressed \
+        --ciphers "$CIPHERS" \
+        --tls13-ciphers "$TLS13_CIPHERS" \
+        -H "User-Agent: $UA" \
+        -H "Accept: */*" \
+        -H "Accept-Language: en-US,en;q=0.9" \
+        -H "Origin: https://www.miruro.tv" \
+        -H "Referer: https://www.miruro.tv/" \
+        -H "Sec-Fetch-Dest: empty" \
+        -H "Sec-Fetch-Mode: cors" \
+        -H "Sec-Fetch-Site: same-origin" \
+        -H "DNT: 1" \
+        -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
+        "https://www.miruro.tv/api/secure/pipe?e=$_e" |
+    sed 's/-/+/g; s/_/\//g' |
+    base64 -d 2>/dev/null |
+    gunzip -c 2>/dev/null
+}
+
+search_anilist() {
+    _query="$1"
+    _eq=$(printf '%s' "$_query" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    _gql='query($s:String){Page(page:1,perPage:40){media(search:$s,type:ANIME,sort:SEARCH_MATCH){id title{romaji english userPreferred}seasonYear episodes format}}}'
+    curl -s --max-time 10 -X POST \
+        -H "Content-Type: application/json" \
+        -A "$UA" \
+        --data "{\"query\":\"${_gql}\",\"variables\":{\"s\":\"${_eq}\"}}" \
+        "https://graphql.anilist.co" 2>/dev/null |
+    sed 's/},{/}\n{/g' |
+    awk -F'"' '
+    /"id":[0-9][0-9]*/{
+        id=substr($0,index($0,"\"id\":")+5)+0
+        if(id==0) next
+        g=substr($0,index($0,"\"id\":")+5)
+        g=substr(g,1,index(g,",")-1)
+        id=g+0
+    }
+    /"userPreferred":"[^"]*"/{
+        if(!id) next
+        t=substr($0,index($0,"\"userPreferred\":\"")+17)
+        t=substr(t,1,index(t,"\"")-1)
+        if(!t) next
+        ep="?";yr="?";f="?"
+        m=substr($0,index($0,"\"episodes\":")+11)
+        ep=m+0; if(ep==0) ep="?"
+        m=substr($0,index($0,"\"seasonYear\":")+13)
+        yr=m+0; if(yr==0) yr="?"
+        if(match($0,/"format":"[A-Z_]+"/)){
+            f=substr($0,RSTART+10,RLENGTH-10)
+        }
+        printf "%s\t%s\t%s\t%s\t%s\n",id,t,ep,yr,f
+        id=0; t=""
+    }
+    /"english":"[^"]*"/{
+        if(!id) next
+        t=substr($0,index($0,"\"english\":\"")+11)
+        t=substr(t,1,index(t,"\"")-1)
+    }
+    /"romaji":"[^"]*"/{
+        if(!id) next
+        if(!t){
+            t=substr($0,index($0,"\"romaji\":\"")+10)
+            t=substr(t,1,index(t,"\"")-1)
+        }
+    }'
+}
+
+miruro_get_episodes() {
+    _anilist_id="$1"
+    pipe "{\"path\":\"episodes\",\"method\":\"GET\",\"query\":{\"anilistId\":$_anilist_id},\"body\":null,\"version\":\"0.1.0\"}"
+}
+
+miruro_get_sources() {
+    _eid="$1"; _prov="$2"; _cat="$3"; _aid="$4"
+    pipe "{\"path\":\"sources\",\"method\":\"GET\",\"query\":{\"episodeId\":\"$_eid\",\"provider\":\"$_prov\",\"category\":\"$_cat\",\"anilistId\":$_aid},\"body\":null,\"version\":\"0.1.0\"}"
+}
+
+miruro_parse_epmap() {
+    awk -F'\t' '
+    {
+        text = $0
+        pos = 0; tmp = text
+        while (match(tmp, /"providers":\{/)) {
+            pos = pos + RSTART + RLENGTH - 1
+            tmp = substr(tmp, RSTART + RLENGTH)
+        }
+        if (pos == 0) next
+        providers = substr(text, pos + 1)
+        gsub(/,"[a-z][a-z][a-z]":{"meta":/, "\n&", providers)
+        gsub(/,"[a-z][a-z][a-z][a-z]":{"meta":/, "\n&", providers)
+        n = split(providers, lines, "\n")
+        current_cat = ""
+        for (i = 1; i <= n; i++) {
+            line = lines[i]
+            if (line == "") continue
+            if (!match(line, /^,?"[a-z][a-z][a-z][a-z]?/)) continue
+            raw = substr(line, RSTART, RLENGTH)
+            gsub(/^,/, "", raw); gsub(/"/, "", raw)
+            prov = raw
+            if (!match(line, /:\{"meta":/)) continue
+            rest = substr(line, RSTART + RLENGTH)
+            if (!match(rest, /"episodes":\{/)) continue
+            eps_raw = substr(rest, RSTART + 11)
+            ne = split(eps_raw, eps_parts, "}")
+            for (j = 1; j <= ne; j++) {
+                seg = eps_parts[j]
+                if (match(seg, /"(sub|dub|es)":\[/)) {
+                    current_cat = substr(seg, RSTART + 1, RLENGTH - 4)
+                    seg = substr(seg, RSTART + RLENGTH)
+                    if (seg == "") continue
+                }
+                num = 0
+                if (match(seg, /"number":([0-9]+)/)) { num = substr(seg, RSTART + 9, RLENGTH - 9) + 0 }
+                eid = ""
+                if (match(seg, /"id":"([^"]+)"/)) { eid = substr(seg, RSTART + 6, RLENGTH - 7) }
+                if (num > 0 && eid != "" && prov != "" && current_cat != "") {
+                    printf "%d\t%s\t%s\t%s\n", num, prov, current_cat, eid
+                }
+            }
+        }
+    }' "$1"
+}
+
+miruro_fetch_epmap() {
+    _aid="$1"
+    miruro_get_episodes "$_aid" > "/tmp/ani-cli-$$-raw-$_aid.json" 2>/dev/null
+    if [ ! -s "/tmp/ani-cli-$$-raw-$_aid.json" ] || ! grep -q '"mappings"' "/tmp/ani-cli-$$-raw-$_aid.json" 2>/dev/null; then
+        return 1
+    fi
+    miruro_parse_epmap "/tmp/ani-cli-$$-raw-$_aid.json"
+    return 0
+}
+
+miruro_find_stream() {
+    _epmap="$1"
+    _ep_no="$2"
+    _mode="$3"
+    _aid="$4"
+
+    _edata=$(grep "^${_ep_no}	" "$_epmap")
+    [ -z "$_edata" ] && return 1
+
+    _providers=$(printf "%s" "$PROVIDER_PRIORITY" | tr ',' ' ')
+    case "$quality" in
+        worst) _types="mp4 hls" ;;
+        *)     _types="hls mp4" ;;
+    esac
+    for _prov in $_providers; do
+        _line=$(printf '%s\n' "$_edata" | while IFS='	' read -r _num _p _cat _eid; do
+            [ "$_p" = "$_prov" ] && [ "$_cat" = "$_mode" ] && printf '%s\t%s\t%s\n' "$_p" "$_cat" "$_eid"
+        done)
+        [ -z "$_line" ] && continue
+        _p=$(printf '%s\n' "$_line" | cut -f1)
+        _c=$(printf '%s\n' "$_line" | cut -f2)
+        _e=$(printf '%s\n' "$_line" | cut -f3)
+        _src=$(miruro_get_sources "$_e" "$_p" "$_c" "$_aid")
+
+        for _type in $_types; do
+            _try_url=$(printf '%s' "$_src" | awk -F'"' '/"type":"'"$_type"'"/{for(i=1;i<NF;i++) if($i=="url") print $(i+2)}' | head -1)
+            [ -z "$_try_url" ] && continue
+            # Skip URLs that already failed playback
+            [ -f "$FAILED_URLS" ] && grep -q "$_try_url" "$FAILED_URLS" 2>/dev/null && continue
+            _ref=$(printf '%s' "$_src" | awk -F'"' '/"type":"'"$_type"'"/{for(i=1;i<NF;i++) if($i=="referer") print $(i+2)}' | head -1)
+            _ctype=$(curl -sL --max-time 3 -o /dev/null -w "%{content_type}" ${_ref:+--referer "$_ref"} "$_try_url" 2>/dev/null)
+            case "$_type" in
+                hls) printf '%s' "$_ctype" | grep -q -i -E 'mpegurl|x-mpegurl|octet-stream' || continue ;;
+                mp4) printf '%s' "$_ctype" | grep -q -i -E 'mp4|octet-stream' || continue ;;
+            esac
+            video_link="$_try_url"
+            referer="$_ref"
+            printf "%s" "$video_link"
+            return 0
+        done
+    done
+    return 1
+}
+
+get_video_link() {
+    if miruro_find_stream "$epmap" "$ep_no" "$mode" "$anime_id"; then
+        return 0
+    fi
+    die "No HLS or MP4 stream available for episode $ep_no!"
+}
+
+# HISTORY
+
+process_hist_entry() {
+    _hist_ep="$1"; _hist_id="$2"; _hist_title="$3"
+    _hist_epmap=$(miruro_fetch_epmap "$_hist_id")
+    if [ $? -ne 0 ]; then return; fi
+    _hist_ep_list=$(printf '%s' "$_hist_epmap" | awk -F'\t' '!seen[$1]++{print $1}' | sort -n -u)
+    _next_ep=$(printf "%s" "$_hist_ep_list" | sed -n "/^${_hist_ep}$/{n;p;}") 2>/dev/null
+    [ -n "$_next_ep" ] && printf "%s\t%s - episode %s\n" "$_hist_id" "$_hist_title" "$_next_ep"
+}
+
+update_history() {
+    if grep -q -- "	${anime_id}	" "$histfile" 2>/dev/null; then
+        safe_title=$(printf "%s" "$anime_title" | sed 's|[&\|]|\\&|g')
+        sed "s|^[^	]*	${anime_id}	[^	]*$|${ep_no}	${anime_id}	${safe_title}|" "$histfile" >"${histfile}.new"
+    else
+        cp "$histfile" "${histfile}.new" 2>/dev/null || : > "${histfile}.new"
+        printf "%s\t%s\t%s\n" "$ep_no" "$anime_id" "$anime_title" >>"${histfile}.new"
+    fi
+    mv "${histfile}.new" "$histfile"
+}
+
+# PLAYING
+
+play_episode() {
+    _retries="${_retries:-0}"
+    [ "$log_episode" = 1 ] && [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && command -v logger >/dev/null && logger -t ani-cli "${anime_title} ${ep_no}"
+    info "Playing episode $ep_no..."
+    [ -z "$video_link" ] && get_video_link
+
+    _rf=""
+    [ -n "$referer" ] && _rf="--referrer=$referer"
+
+    case "$player_function" in
+        *mpv*)
+            [ "$skip_intro" = 1 ] && _skip_flag="$(ani-skip -i "$anime_id" -e "$ep_no")"
+            if [ "$no_detach" = 0 ]; then
+                nohup $player_function $_skip_flag --tls-verify=no --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" $_rf $player_extra_flags >/dev/null 2>&1 &
+                _mpv_pid=$!
+                _ok=1
+                for _ in 1 2 3; do
+                    sleep 1
+                    if ! kill -0 "$_mpv_pid" 2>/dev/null; then
+                        _ok=0; break
+                    fi
+                done
+                if [ "$_ok" = 1 ]; then
+                    update_history
+                else
+                    if [ "$_retries" -lt 2 ]; then
+                        printf "%s" "$video_link" >> "$FAILED_URLS"
+                        unset video_link referer
+                        _retries=$((_retries + 1))
+                        play_episode
+                        return $?
+                    fi
+                    cleanup
+                    die "mpv failed to play the stream"
+                fi
+            else
+                $player_function $_skip_flag --tls-verify=no --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" $_rf $player_extra_flags
+                _mpv_exit=$?
+                if [ "$_mpv_exit" = 0 ]; then
+                    update_history
+                else
+                    if [ "$_retries" -lt 2 ]; then
+                        printf "%s" "$video_link" >> "$FAILED_URLS"
+                        unset video_link referer
+                        _retries=$((_retries + 1))
+                        play_episode
+                        return $?
+                    fi
+                    cleanup
+                    die "mpv exited with error code $_mpv_exit"
+                fi
+                [ "$exit_after_play" = 1 ] && exit "$_mpv_exit"
+            fi
+            ;;
+        *iina*)
+            _rf=""
+            [ -n "$referer" ] && _rf="--mpv-referrer=$referer"
+            if pgrep -f "IINA" >/dev/null 2>&1; then
+                nohup $player_function --no-stdin --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" $_rf $player_extra_flags >/dev/null 2>&1 &
+            else
+                nohup $player_function --no-stdin --keep-running --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" $_rf $player_extra_flags >/dev/null 2>&1 &
+            fi
+            update_history
+            ;;
+        *vlc*)
+            nohup $player_function --play-and-exit --meta-title="${anime_title} Episode ${ep_no}" "$video_link" $_rf $player_extra_flags >/dev/null 2>&1 &
+            update_history
+            ;;
+        *syncplay*)
+            nohup $player_function "$video_link" $player_extra_flags -- --force-media-title="${anime_title} Episode ${ep_no}" >/dev/null 2>&1 &
+            update_history
+            ;;
+        download)
+            if command -v "yt-dlp" >/dev/null; then
+                yt-dlp "$video_link" ${referer:+--referer "$referer"} --no-skip-unavailable-fragments --fragment-retries infinite -N 16 -o "$download_dir/${anime_title} Episode ${ep_no}.mp4" $player_extra_flags
+            else
+                ffmpeg -extension_picky 0 -loglevel error -stats ${referer:+-headers "Referer: $referer"} -i "$video_link" -c copy "$download_dir/${anime_title} Episode ${ep_no}.mp4" $player_extra_flags
+            fi
+            ;;
+        debug)
+            printf "Video link:\n%s\n" "$video_link"
+            ;;
+        *)
+            nohup $player_function "$video_link" $player_extra_flags >/dev/null 2>&1 &
+            update_history
+            ;;
+    esac
+    replay="$video_link"
+    unset video_link
+}
+
+play() {
+    _start=$(printf "%s" "$ep_no" | head -n1 | grep -Eo '^(-1|[0-9]+(\.[0-9]+)?)')
+    _end=$(printf "%s" "$ep_no" | tail -n1 | grep -Eo '(-1|[0-9]+(\.[0-9]+)?)$')
+    [ "$_start" = "-1" ] && ep_no=$(printf "%s" "$ep_list" | tail -n1) && unset _start
+    [ -z "$_end" ] || [ "$_end" = "$_start" ] && unset _start _end
+    [ "$_end" = "-1" ] && _end=$(printf "%s" "$ep_list" | tail -n1)
+    _line_count=$(printf "%s\n" "$ep_no" | wc -l | tr -d "[:space:]")
+    if [ "$_line_count" != 1 ] || [ -n "$_start" ]; then
+        [ -z "$_start" ] && _start=$(printf "%s\n" "$ep_no" | head -n1)
+        [ -z "$_end" ] && _end=$(printf "%s\n" "$ep_no" | tail -n1)
+        _range=$(printf "%s\n" "$ep_list" | sed -n "/^${_start}$/,/^${_end}$/p")
+        [ -z "$_range" ] && die "Invalid range!"
+        for i in $_range; do
+            tput clear
+            ep_no=$i
+            play_episode
+        done
+    else
+        play_episode
+    fi
+    [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && tput rc && tput ed
+}
+
+# MAIN
+
+mode="${ANI_CLI_MODE:-sub}"
+quality="${ANI_CLI_QUALITY:-best}"
+download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"
+menu_program="${ANI_CLI_MENU:-fzf}"
+menu_extra_flags="${ANI_CLI_MENU_FLAGS:-""}"
+player_extra_flags="${ANI_CLI_PLAYER_FLAGS:-""}"
+no_detach="${ANI_CLI_NO_DETACH:-0}"
+exit_after_play="${ANI_CLI_EXIT_AFTER_PLAY:-0}"
+skip_intro="${ANI_CLI_SKIP_INTRO:-0}"
+log_episode="${ANI_CLI_LOG:-1}"
+hist_dir="${ANI_CLI_HIST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ani-cli}"
+histfile="$hist_dir/ani-hsts"
+query=""
+ep_no=""
+index=""
+source="${ANI_CLI_DEFAULT_SOURCE:-search}"
+
+# OS detection for player
+case "$(uname -a | cut -d" " -f 1,3-)" in
+    *Darwin*) player_function="${ANI_CLI_PLAYER:-$(dep_ch_failover "iina,/Applications/IINA.app/Contents/MacOS/iina-cli,mpv,vlc")}" || die 'No player found' ;;
+    *MINGW* | *WSL2*) player_function="${ANI_CLI_PLAYER:-mpv.exe}" ;;
+    *) player_function="${ANI_CLI_PLAYER:-$(dep_ch_failover "mpv,$HOME/.local/share/flatpak/app/io.mpv/Mpv/,vlc")}" || die 'No player found' ;;
+esac
+
+# Arg parsing
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -c | --continue) source=history ;;
+        -d | --download) player_function=download ;;
+        -D | --delete) : > "$histfile"; exit 0 ;;
+        -l | --logview)
+            case "$(uname -s)" in
+                Darwin*) log show --predicate 'process == "logger"' ;;
+                Linux*) journalctl -t ani-cli ;;
+                *) die "Logger not implemented for your platform" ;;
+            esac
+            exit 0 ;;
+        -s | --syncplay)
+            case "$(uname -s)" in
+                Darwin*) player_function="/Applications/Syncplay.app/Contents/MacOS/syncplay" ;;
+                MINGW* | *Msys) export PATH="$PATH:/c/Program Files (x86)/Syncplay/"; player_function="syncplay.exe" ;;
+                *) player_function="syncplay" ;;
+            esac ;;
+        -q | --quality) [ $# -lt 2 ] && die "missing argument!"; quality="$2"; shift ;;
+        -S | --select-nth) [ $# -lt 2 ] && die "missing argument!"; index="$2"; shift ;;
+        -V | --version) version_info ;;
+        -h | --help) help_info ;;
+        -e | --episode | -r | --range) [ $# -lt 2 ] && die "missing argument!"; ep_no="$2"; shift ;;
+        --dub) mode="dub" ;;
+        --skip) skip_intro=1 ;;
+        --no-detach) no_detach=1 ;;
+        --exit-after-play) exit_after_play=1 && no_detach=1 ;;
+        --rofi) menu_program=rofi ;;
+        --dmenu) menu_program=dmenu ;;
+        -U | --update)
+            branch="${2:-$branch}"
+            update_script ;;
+        *) query="$query $1" ;;
+    esac
+    shift
+done
+query=$(printf "%s" "$query" | sed 's/^ //')
+
+[ "$menu_program" = "fzf" ] && menu_multi_flag="-m"
+[ "$menu_program" = "rofi" ] && menu_multi_flag="-multi-select"
+
+dep_ch "curl" && dep_ch "sed" && dep_ch "grep" && dep_ch "awk"
+dep_ch "$menu_program"
+
+case "$player_function" in
+    debug) ;;
+    download) dep_ch_failover "yt-dlp,ffmpeg" >/dev/null || die 'Neither yt-dlp nor ffmpeg found' ;;
+    *) dep_ch "$player_function" ;;
+esac
+
+[ "$skip_intro" = 1 ] && dep_ch "ani-skip"
+
+[ ! -d "$hist_dir" ] && mkdir -p "$hist_dir"
+[ ! -f "$histfile" ] && : > "$histfile"
+trap 'cleanup; exit 1' INT HUP TERM
+
+case "$source" in
+    history)
+        [ ! -s "$histfile" ] && die "No history!"
+        anime_list=$(while IFS='	' read -r ep_no anime_id anime_title; do
+            process_hist_entry "$ep_no" "$anime_id" "$anime_title" &
+        done < "$histfile")
+        wait
+        [ -z "$anime_list" ] && die "No unwatched series in history!"
+        [ -n "$index" ] && [ "$index" -eq "$index" ] 2>/dev/null && result=$(printf "%s" "$anime_list" | sed -n "${index}p")
+        [ -z "$index" ] && result=$(printf "%s" "$anime_list" | nl -w 2 | sed 's/^[[:space:]]//' | nth "Select anime: ")
+        [ -z "$result" ] && die "Invalid/no anime selection"
+        anime_title=$(printf "%s" "$result" | cut -f2 | sed 's| - episode.*||')
+        anime_id=$(printf "%s" "$result" | cut -f1 | grep -Eo '[0-9]+$')
+        ep_no=$(printf "%s" "$result" | sed -n 's/.*- episode \([0-9.]*\)$/\1/p')
+
+        epmap="/tmp/ani-cli-$$-eps-${anime_id}"
+        spin "Fetching episodes..." miruro_fetch_epmap "$anime_id" > "$epmap" || die "Failed to fetch episode data"
+        ep_list=$(awk -F'\t' '!seen[$1]++{print $1}' "$epmap" | sort -n -u) ;;
+    *)
+        if [ "$menu_program" = "fzf" ]; then
+            while [ -z "$query" ]; do
+                printf "\33[2K\r\033[1;36mSearch anime: \033[0m" && read -r query
+            done
+        else
+            [ -z "$query" ] && query=$(printf "" | menu "Search anime: " "" "$menu_extra_flags")
+            [ -z "$query" ] && exit 1
+        fi
+
+        anime_list=$(search_anilist "$query")
+        [ -z "$anime_list" ] && die "No results found!"
+        [ -n "$index" ] && [ "$index" -eq "$index" ] 2>/dev/null && result=$(printf "%s" "$anime_list" | sed -n "${index}p")
+        [ -z "$index" ] && result=$(printf "%s" "$anime_list" | nl -w 2 | sed 's/^[[:space:]]//' | awk -F'\t' '{printf "%s\t%s\t%s [%s]\t%s\t%s\t%s\n", $1, $2, $3, $6, $4, $5, $6}' | nth "Select anime: ")
+        [ -z "$result" ] && die "Invalid/no anime selection"
+        anime_title=$(printf "%s" "$result" | cut -f2 | sed 's/ \[[A-Z_]*\]$//')
+        anime_id=$(printf "%s" "$result" | cut -f1 | grep -Eo '[0-9]+$')
+
+        epmap="/tmp/ani-cli-$$-eps-${anime_id}"
+        spin "Fetching episodes..." miruro_fetch_epmap "$anime_id" > "$epmap" || die "Failed to fetch episode data from Miruro"
+
+        ep_list=$(awk -F'\t' '!seen[$1]++{print $1}' "$epmap" | sort -n -u)
+        [ -z "$ep_list" ] && die "No episodes found!"
+        if [ -n "$ep_no" ]; then
+            printf "%s" "$ep_list" | grep -q "^$ep_no$" || die "Invalid episode selection"
+        fi
+        [ -z "$ep_no" ] && ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag")
+        [ -z "$ep_no" ] && die "Invalid/no episode selection" ;;
+esac
+
+tput cuu1 && tput el
+tput sc
+
+play
+[ "$player_function" = "download" ] || [ "$player_function" = "debug" ] && exit 0
+
+while cmd=$(printf "next\nreplay\nprevious\nselect\nquit" | nth "Playing episode $ep_no of $anime_title... "); do
+    case "$cmd" in
+        next) ep_no=$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/{n;p;}") 2>/dev/null ;;
+        replay) video_link="$replay" ;;
+        previous) ep_no=$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/{g;1!p;};h") 2>/dev/null ;;
+        select) ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag") ;;
+        *) cleanup; exit 0 ;;
+    esac
+    [ -z "$ep_no" ] && die "Out of range"
+    play
+done
