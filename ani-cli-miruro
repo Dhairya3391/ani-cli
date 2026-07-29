@@ -150,7 +150,7 @@ update_script() {
 pipe() {
     _payload="$1"
     _e=$(printf '%s' "$_payload" | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
-    curl -s --max-time 15 --compressed \
+    curl -s --max-time 10 --compressed \
         --ciphers "$CIPHERS" \
         --tls13-ciphers "$TLS13_CIPHERS" \
         -H "User-Agent: $UA" \
@@ -228,15 +228,16 @@ miruro_get_sources() {
 }
 
 miruro_parse_epmap() {
-    awk -F'\t' '
-    {
-        text = $0
+    awk '
+    { text = text $0 }
+    END {
+        if (text == "" || !match(text, /"mappings":/)) exit 1
         pos = 0; tmp = text
         while (match(tmp, /"providers":\{/)) {
             pos = pos + RSTART + RLENGTH - 1
             tmp = substr(tmp, RSTART + RLENGTH)
         }
-        if (pos == 0) next
+        if (pos == 0) exit
         providers = substr(text, pos + 1)
         gsub(/,"[a-z][a-z][a-z]":{"meta":/, "\n&", providers)
         gsub(/,"[a-z][a-z][a-z][a-z]":{"meta":/, "\n&", providers)
@@ -270,58 +271,111 @@ miruro_parse_epmap() {
                 }
             }
         }
-    }' "$1"
+    }'
 }
 
 miruro_fetch_epmap() {
     _aid="$1"
-    miruro_get_episodes "$_aid" > "/tmp/ani-cli-$$-raw-$_aid.json" 2>/dev/null
-    if [ ! -s "/tmp/ani-cli-$$-raw-$_aid.json" ] || ! grep -q '"mappings"' "/tmp/ani-cli-$$-raw-$_aid.json" 2>/dev/null; then
-        return 1
+    miruro_get_episodes "$_aid" 2>/dev/null | miruro_parse_epmap
+}
+
+_try_hls() {
+    _data="$1"
+    _url=$(printf '%s' "$_data" | sed -n '1p')
+    _ref=$(printf '%s' "$_data" | sed -n '2p')
+    [ -z "$_url" ] && return 1
+    [ -f "$FAILED_URLS" ] && grep -q "$_url" "$FAILED_URLS" 2>/dev/null && return 1
+    _resp=$(curl -sL --max-time 1.5 -r 0-0 -o /dev/null -w "%{http_code}:%{content_type}" ${_ref:+--referer "$_ref"} "$_url" 2>/dev/null)
+    _code="${_resp%%:*}"
+    _ctype="${_resp#*:}"
+    if { [ "$_code" = "206" ] || [ "$_code" = "200" ]; } && printf '%s' "$_ctype" | grep -q -i -E 'mpegurl|x-mpegurl|octet-stream'; then
+        video_link="$_url"; referer="$_ref"; return 0
     fi
-    miruro_parse_epmap "/tmp/ani-cli-$$-raw-$_aid.json"
-    return 0
+    return 1
+}
+
+_try_mp4() {
+    _cand="$1"
+    _url=$(printf '%s' "$_cand" | cut -f2)
+    _ref=$(printf '%s' "$_cand" | cut -f3)
+    [ -z "$_url" ] && return 1
+    [ -f "$FAILED_URLS" ] && grep -q "$_url" "$FAILED_URLS" 2>/dev/null && return 1
+    _resp=$(curl -sL --max-time 1.5 -r 0-0 -o /dev/null -w "%{http_code}:%{content_type}" ${_ref:+--referer "$_ref"} "$_url" 2>/dev/null)
+    _code="${_resp%%:*}"
+    _ctype="${_resp#*:}"
+    if { [ "$_code" = "206" ] || [ "$_code" = "200" ]; } && printf '%s' "$_ctype" | grep -q -i -E 'mp4|octet-stream'; then
+        video_link="$_url"; referer="$_ref"; return 0
+    fi
+    return 1
 }
 
 miruro_find_stream() {
-    _epmap="$1"
-    _ep_no="$2"
-    _mode="$3"
-    _aid="$4"
+    _epmap="$1"; _ep_no="$2"; _mode="$3"; _aid="$4"
 
     _edata=$(grep "^${_ep_no}	" "$_epmap")
     [ -z "$_edata" ] && return 1
 
     _providers=$(printf "%s" "$PROVIDER_PRIORITY" | tr ',' ' ')
-    case "$quality" in
-        worst) _types="mp4 hls" ;;
-        *)     _types="hls mp4" ;;
-    esac
-    for _prov in $_providers; do
-        _line=$(printf '%s\n' "$_edata" | while IFS='	' read -r _num _p _cat _eid; do
-            [ "$_p" = "$_prov" ] && [ "$_cat" = "$_mode" ] && printf '%s\t%s\t%s\n' "$_p" "$_cat" "$_eid"
-        done)
-        [ -z "$_line" ] && continue
-        _p=$(printf '%s\n' "$_line" | cut -f1)
-        _c=$(printf '%s\n' "$_line" | cut -f2)
-        _e=$(printf '%s\n' "$_line" | cut -f3)
-        _src=$(miruro_get_sources "$_e" "$_p" "$_c" "$_aid")
+    _hls_first=1
+    [ "$quality" = "worst" ] && _hls_first=0
 
-        for _type in $_types; do
-            _try_url=$(printf '%s' "$_src" | awk -F'"' '/"type":"'"$_type"'"/{for(i=1;i<NF;i++) if($i=="url") print $(i+2)}' | head -1)
-            [ -z "$_try_url" ] && continue
-            # Skip URLs that already failed playback
-            [ -f "$FAILED_URLS" ] && grep -q "$_try_url" "$FAILED_URLS" 2>/dev/null && continue
-            _ref=$(printf '%s' "$_src" | awk -F'"' '/"type":"'"$_type"'"/{for(i=1;i<NF;i++) if($i=="referer") print $(i+2)}' | head -1)
-            _ctype=$(curl -sL --max-time 3 -o /dev/null -w "%{content_type}" ${_ref:+--referer "$_ref"} "$_try_url" 2>/dev/null)
-            case "$_type" in
-                hls) printf '%s' "$_ctype" | grep -q -i -E 'mpegurl|x-mpegurl|octet-stream' || continue ;;
-                mp4) printf '%s' "$_ctype" | grep -q -i -E 'mp4|octet-stream' || continue ;;
-            esac
-            video_link="$_try_url"
-            referer="$_ref"
-            printf "%s" "$video_link"
-            return 0
+    for _prov in $_providers; do
+        _match=$(printf '%s\n' "$_edata" | awk -F'\t' -v p="$_prov" -v m="$_mode" '$2==p && $3==m{print;exit}')
+        [ -z "$_match" ] && continue
+
+        _e=$(printf '%s' "$_match" | cut -f4)
+        _src=$(miruro_get_sources "$_e" "$_prov" "$_mode" "$_aid")
+        [ -z "$_src" ] && continue
+
+        # Process HLS or MP4 based on order
+        for _pass in 0 1; do
+            _try_hls_this=0; _try_mp4_this=0
+            if [ "$_pass" = 0 ]; then
+                [ "$_hls_first" = 1 ] && _try_hls_this=1 || _try_mp4_this=1
+            else
+                [ "$_hls_first" = 1 ] && _try_mp4_this=1 || _try_hls_this=1
+            fi
+
+            if [ "$_try_hls_this" = 1 ]; then
+                _hls_info=$(printf '%s' "$_src" | sed 's/},{/}\n{/g' | awk -F'"' '
+                /"type":"hls"/{
+                    for(i=1;i<NF;i++) {
+                        if($i=="url" && !url) url=$(i+2)
+                        if($i=="referer" && !ref) ref=$(i+2)
+                    }
+                }
+                END { if(url) print url; if(ref && url && ref!=url) print ref }
+                ')
+                _try_hls "$_hls_info" && return 0
+            fi
+
+            if [ "$_try_mp4_this" = 1 ]; then
+                _mp4_candidates=$(printf '%s' "$_src" | sed 's/},{/}\n{/g' | awk -F'"' '
+                /"type":"mp4"/{
+                    url=""; ref=""; qn=0
+                    for(i=1;i<NF;i++) {
+                        if($i=="url" && !url) url=$(i+2)
+                        if($i=="referer" && !ref) ref=$(i+2)
+                        if($i=="quality" && !qn) qn=$(i+2)+0
+                    }
+                    if(url) print qn"\t"url"\t"ref
+                }' 2>/dev/null)
+                [ -z "$_mp4_candidates" ] && continue
+
+                case "$quality" in
+                    worst) _mp4_candidates=$(printf '%s' "$_mp4_candidates" | sort -t"$(printf '\t')" -k1,1n) ;;
+                    *)     _mp4_candidates=$(printf '%s' "$_mp4_candidates" | sort -t"$(printf '\t')" -k1,1rn) ;;
+                esac
+
+                _saved_ifs="$IFS"
+                IFS='
+'
+                set -f; set -- $_mp4_candidates; set +f
+                IFS="$_saved_ifs"
+                for _cand do
+                    _try_mp4 "$_cand" && return 0
+                done
+            fi
         done
     done
     return 1
