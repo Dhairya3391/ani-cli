@@ -2,6 +2,10 @@
 
 version_number="5.0.0"
 
+CIPHERS='ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
+TLS13_CIPHERS='TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
+UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
 # UI
 
 # shellcheck disable=SC2086
@@ -113,7 +117,7 @@ version_info() {
 
 update_script() {
     info "[branch:$branch] Checking for Update.."
-    update="$(curl --fail-with-body -sL -A "$agent" "https://raw.githubusercontent.com/pystardust/ani-cli/$branch/ani-cli")" || die "[branch:$branch] Connection error: $update"
+    update="$(curl --fail-with-body -sL -A "$UA" "https://raw.githubusercontent.com/pystardust/ani-cli/$branch/ani-cli")" || die "[branch:$branch] Connection error: $update"
     new_version="$(printf "%s" "$update" | sed -nE 's|^version_number="([^"]+)"$|\1|p')"
     [ -z "$new_version" ] && die "[branch:$branch] Invalid response."
     printf "%s" "$update" | grep -q "^version_number" || die "[branch:$branch] Invalid response."
@@ -148,6 +152,27 @@ dep_ch_failover() {
 cleanup() {
     tput sgr0               # clears colors
     rm -f "${histfile}.new" # remove temp logfile
+    rm -f "$COOKIE_JAR"
+}
+
+# curl wrapper for anidb.app requests (bypasses Cloudflare)
+_req() {
+    _url="$1"
+    _accept="${2:-text/html,application/xhtml+xml,application/xml;q=0.8,*/*;q=0.8}"
+    curl -s --max-time 10 --compressed \
+        --ciphers "$CIPHERS" \
+        --tls13-ciphers "$TLS13_CIPHERS" \
+        -A "$UA" \
+        -H "Accept: $_accept" \
+        -H "Accept-Language: en-US,en;q=0.9" \
+        -H "Origin: https://anidb.app" \
+        -H "Referer: https://anidb.app/" \
+        -H "Sec-Fetch-Dest: document" \
+        -H "Sec-Fetch-Mode: navigate" \
+        -H "Sec-Fetch-Site: same-origin" \
+        -H "DNT: 1" \
+        -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
+        "$_url"
 }
 
 # SCRAPING
@@ -156,7 +181,7 @@ cleanup() {
 anidb_search() {
     _query="$1"
     #shellcheck disable=SC2059
-    _page="$(curl -s "$(printf "$search_api" "${_query}")" -A "$agent" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
+    _page="$(_req "$(printf "$search_api" "${_query}")" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
     printf '%s' "$_page" | sed -nE 's|.*anime/([a-z0-9-]+-[0-9]+)".*alt="([^"]+)".*|\1\t\2|p' | sed -e "s|&#039;|'|g"
 }
 
@@ -164,7 +189,7 @@ anidb_search() {
 anidb_desc() {
     _anime_link="$1"
     #shellcheck disable=SC2059
-    _page="$(curl -s "$(printf "$desc_api" "${_anime_link}")" -A "$agent" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
+    _page="$(_req "$(printf "$desc_api" "${_anime_link}")" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
     mal_id="$(printf "%s" "$_page" | sed -nE 's|.*https://myanimelist.net/anime/([0-9]+)/.*|\1|p')"
     seasons="$(printf "%s" "$_page" | sed -n '/>Seasons</,/>Details</p' | sed -nE 's|.*anime/([^"]+-[0-9]+)"[^>]*title="([^"]+)".*|\1\t\2|p' | sed -e "s|&#039;|'|g")"
     [ -n "$seasons" ] && seasons_option="\nchange_season"
@@ -174,7 +199,7 @@ anidb_desc() {
 anidb_episodes() {
     _anime_id="$1"
     #shellcheck disable=SC2059
-    _page="$(curl -s "$(printf "$episodes_api" "${_anime_id}")" -A "$agent")"
+    _page="$(_req "$(printf "$episodes_api" "${_anime_id}")" "*/*")"
     printf "%s" "$_page" | sed 's|},{|}\n{|g' | sed -nE 's|.*"id":([0-9]+).*"number":([0-9]+).*|\1\t\2|p'
 }
 
@@ -184,12 +209,12 @@ anidb_m3u8() {
     _lang="jpn"
     [ "$2" = "dub" ] && _lang="eng"
     #shellcheck disable=SC2059
-    _page="$(curl -s "$(printf "$m3u8_api" "${_ep_id}")" -A "$agent")"
+    _page="$(_req "$(printf "$m3u8_api" "${_ep_id}")" "*/*")"
     _embed="$(printf "%s" "$_page" | sed 's|},{|}\n{|g' | sed -nE 's|.*'"${_lang}"'.*embed_url":"([^"]+)".*|\1|p' | sed 's|\\/|/|g' | head -n1)"
     [ -z "$_embed" ] && exit 1
-    _embed_page="$(curl -s "$_embed" -A "$agent")"
+    _embed_page="$(_req "$_embed")"
     _m3u8_master="$(printf "%s" "$_embed_page" | sed -nE "s|.*file: '([^']*)'.*|\1|p" | head -n1)"
-    curl -s -A "$agent" "${_m3u8_master}" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d'
+    curl -s --max-time 10 -A "$UA" -H "Referer: $_embed" "${_m3u8_master}" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d'
 }
 
 # select the quality according to the setting
@@ -372,7 +397,7 @@ desc_api="${base_api}/anime/%s"
 episodes_api="${base_api}/api/frontend/anime/%s/episodes"
 m3u8_api="${base_api}/api/frontend/episode/%s/languages"
 
-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:153.0) Gecko/20100101 Firefox/153.0"
+COOKIE_JAR="/tmp/ani-cli-cookies-$$"
 mode="${ANI_CLI_MODE:-sub}"
 download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"
 log_episode="${ANI_CLI_LOG:-1}"
@@ -497,6 +522,9 @@ esac
 
 # idk where to put this, so I put it here...
 trap 'cleanup; exit 1' INT HUP TERM
+
+info "Initializing session..."
+_req "https://anidb.app/" >/dev/null 2>&1
 
 # searching
 case "$source" in
