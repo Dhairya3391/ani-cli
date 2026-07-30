@@ -152,7 +152,6 @@ dep_ch_failover() {
 cleanup() {
     tput sgr0               # clears colors
     rm -f "${histfile}.new" # remove temp logfile
-    rm -f "$COOKIE_JAR"
 }
 
 # curl wrapper for anidb.app requests (bypasses Cloudflare)
@@ -164,14 +163,6 @@ _req() {
         --tls13-ciphers "$TLS13_CIPHERS" \
         -A "$UA" \
         -H "Accept: $_accept" \
-        -H "Accept-Language: en-US,en;q=0.9" \
-        -H "Origin: https://anidb.app" \
-        -H "Referer: https://anidb.app/" \
-        -H "Sec-Fetch-Dest: document" \
-        -H "Sec-Fetch-Mode: navigate" \
-        -H "Sec-Fetch-Site: same-origin" \
-        -H "DNT: 1" \
-        -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
         "$_url"
 }
 
@@ -214,7 +205,7 @@ anidb_m3u8() {
     [ -z "$_embed" ] && exit 1
     _embed_page="$(_req "$_embed")"
     _m3u8_master="$(printf "%s" "$_embed_page" | sed -nE "s|.*file: '([^']*)'.*|\1|p" | head -n1)"
-    curl -s --max-time 10 -A "$UA" -H "Referer: $_embed" "${_m3u8_master}" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d'
+    curl -s --max-time 10 -A "$UA" "${_m3u8_master}" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d'
 }
 
 # select the quality according to the setting
@@ -397,7 +388,6 @@ desc_api="${base_api}/anime/%s"
 episodes_api="${base_api}/api/frontend/anime/%s/episodes"
 m3u8_api="${base_api}/api/frontend/episode/%s/languages"
 
-COOKIE_JAR="/tmp/ani-cli-cookies-$$"
 mode="${ANI_CLI_MODE:-sub}"
 download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"
 log_episode="${ANI_CLI_LOG:-1}"
@@ -522,9 +512,6 @@ esac
 
 # idk where to put this, so I put it here...
 trap 'cleanup; exit 1' INT HUP TERM
-
-info "Initializing session..."
-_req "https://anidb.app/" >/dev/null 2>&1
 
 # searching
 case "$source" in
