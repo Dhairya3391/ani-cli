@@ -146,8 +146,33 @@ dep_ch_failover() {
 }
 
 cleanup() {
-    tput sgr0               # clears colors
-    rm -f "${histfile}.new" # remove temp logfile
+    tput sgr0 2>/dev/null || true # clears colors
+    rm -f "${histfile}.new" "${COOKIE_JAR}"
+}
+
+# curl wrapper - tries every trick to bypass Cloudflare
+_req() {
+    _url="$1"
+    _accept="${2:-text/html,application/xhtml+xml,application/xml;q=0.8,*/*;q=0.8}"
+    _nocache="${3-}"
+    _cachebust=""
+    [ -n "$_nocache" ] && _cachebust="&_=$(date +%s 2>/dev/null || echo 0)"
+    curl -s --max-time 10 --compressed \
+        --ciphers "$ciphers" \
+        $_tls13 \
+        -A "$agent" \
+        -H "Accept: $_accept" \
+        -H "Accept-Language: en-US,en;q=0.9" \
+        -H "Origin: https://anidb.app" \
+        -H "Referer: https://anidb.app/" \
+        -H "Sec-Fetch-Dest: document" \
+        -H "Sec-Fetch-Mode: navigate" \
+        -H "Sec-Fetch-Site: same-origin" \
+        -H "Sec-Fetch-User: ?1" \
+        -H "Upgrade-Insecure-Requests: 1" \
+        -H "DNT: 1" \
+        -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
+        "${_url}${_cachebust}"
 }
 
 # SCRAPING
@@ -155,14 +180,14 @@ cleanup() {
 # search the query and give results
 anidb_search() {
     #shellcheck disable=SC2059
-    _page="$(curl -s "$(printf "$search_api" "$1")" -A "$agent" --ciphers "$ciphers" --tls13-ciphers "$tls13_ciphers" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
+    _page="$(_req "$(printf "$search_api" "$1")" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
     printf '%s' "$_page" | sed -nE 's|.*anime/([a-z0-9-]+-[0-9]+)".*alt="([^"]+)".*|\1\t\2|p' | sed -e "s|&#039;|'|g" -e 's|&quot;|"|g'
 }
 
 # extract mal_id and seasons metadata
 anidb_desc() {
     #shellcheck disable=SC2059
-    _page="$(curl -s "$(printf "$desc_api" "$1")" -A "$agent" --ciphers "$ciphers" --tls13-ciphers "$tls13_ciphers" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
+    _page="$(_req "$(printf "$desc_api" "$1")" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
     mal_id="$(printf "%s" "$_page" | sed -nE 's|.*https://myanimelist.net/anime/([0-9]+)/.*|\1|p')"
     seasons="$(printf "%s" "$_page" | sed -n '/>Seasons</,/>Details</p' | sed -nE 's|.*anime/([^"]+-[0-9]+)"[^>]*title="([^"]+)".*|\1\t\2|p' | sed -e "s|&#039;|'|g")"
     [ -n "$seasons" ] && seasons_option="\nchange_season"
@@ -171,7 +196,7 @@ anidb_desc() {
 # get the episodes list of the selected anime
 anidb_episodes() {
     #shellcheck disable=SC2059
-    _page="$(curl -s "$(printf "$episodes_api" "$1")" -A "$agent" --ciphers "$ciphers" --tls13-ciphers "$tls13_ciphers" )"
+    _page="$(_req "$(printf "$episodes_api" "$1")" "*/*" nocache)"
     printf "%s" "$_page" | sed 's|},{|}\n{|g' | sed -nE 's|.*"id":([0-9]+).*"number":([0-9]+).*|\1\t\2|p'
 }
 
@@ -181,12 +206,12 @@ anidb_m3u8() {
     _lang="jpn"
     [ "$2" = "dub" ] && _lang="eng"
     #shellcheck disable=SC2059
-    _page="$(curl -s "$(printf "$m3u8_api" "${_ep_id}")" -A "$agent" --ciphers "$ciphers" --tls13-ciphers "$tls13_ciphers" )"
+    _page="$(_req "$(printf "$m3u8_api" "${_ep_id}")" "*/*" nocache)"
     _embed="$(printf "%s" "$_page" | sed 's|},{|}\n{|g' | sed -nE 's|.*'"${_lang}"'.*embed_url":"([^"]+)".*|\1|p' | sed 's|\\/|/|g' | head -n1)"
     [ -z "$_embed" ] && exit 1
-    _embed_page="$(curl -s "$_embed" -A "$agent" --ciphers "$ciphers" --tls13-ciphers "$tls13_ciphers" )"
+    _embed_page="$(_req "$_embed")"
     _m3u8_master="$(printf "%s" "$_embed_page" | sed -nE "s|.*file: '([^']*)'.*|\1|p" | head -n1)"
-    curl -s -A "$agent" "${_m3u8_master}" --ciphers "$ciphers" --tls13-ciphers "$tls13_ciphers" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d'
+    curl -s --max-time 10 -A "$agent" "${_m3u8_master}" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d'
 }
 
 # select the quality according to the setting
@@ -346,7 +371,7 @@ play() {
         _range=$(printf "%s\n" "$ep_list" | sed -nE "/^${_start}\$/,/^${_end}\$/p")
         [ -z "$_range" ] && die "Invalid range!"
         for i in $_range; do
-            tput clear
+            tput clear 2>/dev/null || true
             ep_no=$i
             info "Playing episode $ep_no..."
             [ "$i" = "$_end" ] && unset _range
@@ -357,7 +382,7 @@ play() {
         play_episode
     fi
     # moves up to stored position and deletes to end
-    [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && tput rc && tput ed
+    [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && { tput rc 2>/dev/null; tput ed 2>/dev/null; } || true
 }
 
 # MAIN
@@ -373,6 +398,11 @@ m3u8_api="${base_api}/api/frontend/episode/%s/languages"
 ciphers='ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
 tls13_ciphers='TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
 agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+COOKIE_JAR="/tmp/ani-cli-cookies-$$"
+
+# detect if curl supports --tls13-ciphers
+_tls13=""
+curl --help ssl 2>/dev/null | grep -q "tls13-ciphers" && _tls13="--tls13-ciphers $tls13_ciphers"
 
 mode="${ANI_CLI_MODE:-sub}"
 download_dir="${ANI_CLI_DOWNLOAD_DIR:-.}"
@@ -499,6 +529,9 @@ esac
 # idk where to put this, so I put it here...
 trap 'cleanup; exit 1' INT HUP TERM
 
+# warmup: establish session before API calls
+_req "https://anidb.app/" >/dev/null 2>&1
+
 # searching
 case "$source" in
     history)
@@ -543,9 +576,9 @@ case "$source" in
 esac
 
 # moves the cursor up one line and clears that line
-tput cuu1 && tput el
+tput cuu1 2>/dev/null; tput el 2>/dev/null
 # stores the position of cursor
-tput sc
+tput sc 2>/dev/null
 
 # playback & loop
 play
