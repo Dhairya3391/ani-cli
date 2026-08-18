@@ -295,10 +295,13 @@ update_history() {
 # PLAYING
 
 # shellcheck disable=SC2086
-# $1 = video link, $2 = video name, $3 = extra flags
+# $1 = video link, $2 = video name, $3+ = extra flags
 download() {
-    command -v "yt-dlp" >/dev/null && yt-dlp "$1" --no-skip-unavailable-fragments --fragment-retries infinite -N 16 -o "$download_dir/$2.mp4" $3 && return 0
-    ffmpeg -extension_picky 0 -loglevel error -stats -i "$1" -c copy "$download_dir/$2.mp4" $3
+    _video_link="$1"
+    _video_name="$2"
+    shift 2
+    command -v "yt-dlp" >/dev/null && yt-dlp "$_video_link" --no-skip-unavailable-fragments --fragment-retries infinite -N 16 -o "$download_dir/$_video_name.mp4" "$@" && return 0
+    ffmpeg -extension_picky 0 -loglevel error -stats -i "$_video_link" -c copy "$download_dir/$_video_name.mp4" "$@"
 }
 
 play_episode() {
