@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version_number="5.0.4"
+version_number="5.1.0"
 
 # UI
 
@@ -149,7 +149,7 @@ cleanup() {
 # SCRAPING
 
 #shellcheck disable=SC2086
-anidb_curl() {
+hianime_curl() {
     _response="$($curl_exe -sL -A "$agent" --max-time 10 $cipher_flag -w ' %{http_code}' "$@")" ||
         die "Connection error: could not fetch $1 (curl exit $?)"
     _http_code=${_response##* }
@@ -161,48 +161,110 @@ anidb_curl() {
     printf "%s" "$_response"
 }
 
+# Decode one base64 value. GNU, BSD and OpenSSL use different switches.
+b64_decode() {
+    printf "%s\n" "$1" | base64 -d 2>/dev/null || printf "%s\n" "$1" | base64 -D 2>/dev/null || printf "%s\n" "$1" | openssl base64 -d -A 2>/dev/null
+}
+
+# Deobfuscate the XOR blob with key otaku-embed-v1.
+# The subshell keeps the temporary positional parameters out of the caller.
+deobfuscate_blob() (
+    _blob=$1
+    set -- 111 116 97 107 117 45 101 109 98 101 100 45 118 49
+    _bytes="$(b64_decode "$_blob" | od -v -An -tu1)"
+    _output=""
+    for _byte in $_bytes; do
+        _key=$1
+        shift
+        set -- "$@" "$_key"
+        _char=$((_byte ^ _key))
+        _output="${_output}\\$((_char / 64))$(((_char / 8) % 8))$((_char % 8))"
+    done
+    printf "%b" "$_output" | sed -n 's|.*"src":"\([^"]*\.m3u8[^"]*\)".*|\1|p'
+)
+
 # search the query and give results. format is (id \t name)
-anidb_search() {
+hianime_search() {
     #shellcheck disable=SC2059
-    _page="$(anidb_curl "$(printf "$search_api" "$1")")" || return 1
-    _page="$(printf "%s" "$_page" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
-    [ -z "$_page" ] && die "Connection error: no response from $base_api"
+    _page="$(hianime_curl "$(printf "$search_api" "$1")")" || return 1
     if printf "%s" "$_page" | grep -qi "Just a moment"; then
         [ "$curl_exe" = "curl" ] && die "Blocked by cloudflare. Try installing curl-impersonate"
         die "Blocked by cloudflare."
     fi
-    printf "%s" "$_page" | sed -nE 's|.*anime/([a-z0-9-]+-[0-9]+)".*alt="([^"]+)".*|\1\t\2|p' | sed -e "s|&#039;|'|g" -e 's|&quot;|"|g' -e "s|&amp;|\&|g"
+    printf "%s" "$_page" | tr '\n' ' ' | sed 's|<div class="film-detail">|\n<div class="film-detail">|g' |
+        sed -n 's|.*<h3 class="film-name">[[:space:]]*<a href="https://hianime\.at/\([^"]*\)"[[:space:]]*title="\([^"]*\)".*|\1\t\2|p' |
+        sed -e "s|&#039;|'|g" -e 's|&quot;|"|g' -e "s|&amp;|\&|g" -e "s|&apos;|'|g" -e "s|&lt;|<|g" -e "s|&gt;|>|g"
 }
 
 # extract mal_id and seasons metadata
-anidb_desc() {
+hianime_desc() {
     #shellcheck disable=SC2059
-    _page="$(anidb_curl "$(printf "$desc_api" "$1")" | tr '\n' ' ' | sed 's|<a href|\n<a href|g')"
-    mal_id="$(printf "%s" "$_page" | sed -nE 's|.*https://myanimelist.net/anime/([0-9]+)/.*|\1|p')"
-    seasons="$(printf "%s" "$_page" | sed -n '/>Seasons</,/>Details</p' | sed -nE 's|.*anime/([^"]+-[0-9]+)"[^>]*title="([^"]+)".*|\1\t\2|p' | sed -e "s|&#039;|'|g")"
+    _page="$(hianime_curl "$(printf "$desc_api" "$1")")"
+    mal_id="$(printf "%s" "$_page" | sed -n 's|.*myanimelist\.net/anime/\([0-9][0-9]*\).*|\1|p')"
+    # Related entries are grouped in the season list on HiAnime pages.
+    seasons="$(printf "%s" "$_page" | tr '\n' ' ' | sed 's|<a href|\n<a href|g' | sed -n 's|.*href="https://hianime\.at/\([^"?][^"]*\)"[^>]*title="\([^"]*\)".*|\1\t\2|p' | sed -e "s|&#039;|'|g" -e 's|&quot;|"|g' -e 's|&amp;|\&|g')"
     [ -n "$seasons" ] && seasons_option="\nchange_season"
 }
 
 # get the episodes list of the selected anime. format is (id \t ep_no)
-anidb_episodes() {
+hianime_episodes() {
     #shellcheck disable=SC2059
-    _page="$(anidb_curl "$(printf "$episodes_api" "${1##*-}")")" || return 1
-    [ -z "$_page" ] && die "Connection error: no response from $base_api"
-    printf "%s" "$_page" | sed 's|},{|}\n{|g' | sed -nE 's|.*"id":([0-9]+).*"number":([0-9]+).*|\1\t\2|p'
+    _page="$(hianime_curl -H "X-Requested-With: XMLHttpRequest" "$(printf "$episodes_api" "${1##*-}")")" || return 1
+    printf "%s" "$_page" | sed 's|\\\"|"|g; s|ep-item|\nep-item|g' |
+        sed -n 's|.*data-number="\([^"]*\)".*data-id="\([0-9][0-9]*\)".*|\2\t\1|p'
 }
 
 # extract the individual m3u8 links from response of embed urls
-anidb_m3u8() {
-    _ep_id=$(printf "%s" "$episode_maps" | sed -nE "s|^([0-9]+)\t${1}$|\1|p")
-    _lang="jpn"
-    [ "$2" = "dub" ] && _lang="eng"
+hianime_m3u8() {
+    _ep_id=$(printf "%s" "$episode_maps" | sed -n "s|^\([0-9][0-9]*\)\t${1}$|\1|p")
+    _lang="sub"
+    [ "$2" = "dub" ] && _lang="dub"
+    [ -z "$_ep_id" ] && return 1
+
+    # 1. Get servers
     #shellcheck disable=SC2059
-    _page="$(anidb_curl "$(printf "$m3u8_api" "${_ep_id}")")"
-    _embed="$(printf "%s" "$_page" | sed 's|},{|}\n{|g' | sed -nE 's|.*'"${_lang}"'.*embed_url":"([^"]+)".*|\1|p' | sed 's|\\/|/|g' | head -n 1)"
-    [ -z "$_embed" ] && return 1
-    _embed_page="$(anidb_curl "$_embed")"
-    _m3u8_master="$(printf "%s" "$_embed_page" | sed -nE "s|.*file: '([^']*)'.*|\1|p" | head -n 1)"
-    anidb_curl "${_m3u8_master}" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d'
+    _servers_json="$(hianime_curl -H "X-Requested-With: XMLHttpRequest" "$(printf "$servers_api" "${_ep_id}")")"
+
+    # 2. Prefer HD-1; otherwise use the first server for the selected language.
+    _servers="$(printf "%s" "$_servers_json" | sed 's|\\\"|"|g; s|server-item|\nserver-item|g')"
+    _hash="$(printf "%s\n" "$_servers" | grep "data-type=\"${_lang}\"" | grep "data-server-name=\"HD-1\"" | sed -n 's|.*data-hash="\([^"]*\)".*|\1|p' | head -n 1)"
+    [ -z "$_hash" ] && _hash="$(printf "%s\n" "$_servers" | grep "data-type=\"${_lang}\"" | sed -n 's|.*data-hash="\([^"]*\)".*|\1|p' | head -n 1)"
+
+    [ -z "$_hash" ] && return 1
+
+    # 3. Base64 decode embed URL
+    _embed_url="$(b64_decode "$_hash")"
+    [ -z "$_embed_url" ] && return 1
+
+    # Extract mal_id for ani-skip
+    mal_id="$(printf "%s" "$_embed_url" | sed -n 's|.*/stream/mal/\([0-9][0-9]*\)/.*|\1|p')"
+
+    # 4. Fetch embed HTML
+    _embed_page="$(hianime_curl -e "${base_api}/" "$_embed_url")"
+    _blob="$(printf "%s" "$_embed_page" | sed -n 's|.*window\.__P="\([^"]*\)".*|\1|p')"
+    [ -z "$_blob" ] && return 1
+
+    # 5. Deobfuscate
+    _m3u8_master="$(deobfuscate_blob "$_blob")"
+    [ -z "$_m3u8_master" ] && return 1
+
+    # 6. Fetch the master playlist and expand quality variants.
+    _m3u8_content="$(hianime_curl -e "https://zokoanime.video/" "$_m3u8_master")"
+    if printf "%s" "$_m3u8_content" | grep -q "#EXT-X-STREAM-INF"; then
+        _base_url="${_m3u8_master%/*}"
+        _parsed="$(printf "%s\n" "$_m3u8_content" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d')"
+        printf "%s\n" "$_parsed" | while IFS= read -r _line || [ -n "$_line" ]; do
+            [ -z "$_line" ] && continue
+            _quality=$(printf "%s" "$_line" | cut -d ">" -f 1 | tr -d " ")
+            _path=$(printf "%s" "$_line" | cut -d ">" -f 2 | tr -d " ")
+            case "$_path" in
+                http*) printf "%s >%s\n" "$_quality" "$_path" ;;
+                *) printf "%s >%s/%s\n" "$_quality" "$_base_url" "$_path" ;;
+            esac
+        done
+    else
+        printf "default >%s\n" "$_m3u8_master"
+    fi
 }
 
 # select the quality according to the setting
@@ -219,9 +281,9 @@ select_quality() {
 
 # gets embed url, collects direct links and selects one with desired quality into $episode
 get_video_link() {
-    links=$(anidb_m3u8 "$ep_no" "$mode" | sort -g -r -s)
+    links=$(hianime_m3u8 "$ep_no" "$mode" | sort -g -r -s)
     [ -z "$links" ] && die "No sources found for $mode!"
-    info "anidb.app links fetched"
+    info "hianime.at links fetched"
     select_quality "$quality"
     # should never trigger but just in case
     if printf "%s" "$ep_list" | grep -q "^$ep_no$"; then
@@ -276,6 +338,7 @@ time_until_next_ep() {
 
 backup_old_hist() {
     backupfile="${histfile}.v4"
+    : >"${histfile}.new"
     while IFS="	" read -r ep_no anime_id anime_title; do
         case "$anime_id" in
             *-*) printf "%s\t%s\t%s\n" "$ep_no" "$anime_id" "$anime_title" >>"${histfile}.new" ;;
@@ -286,7 +349,7 @@ backup_old_hist() {
 }
 
 process_hist_entry() {
-    ep_list=$(anidb_episodes "$anime_id" | cut -f 2)
+    ep_list=$(hianime_episodes "$anime_id" | cut -f 2)
     ep_no=$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/{n;p;}") 2>/dev/null
     [ -n "$ep_no" ] && printf "%s\t%s - episode %s\n" "$anime_id" "$anime_title" "$ep_no"
 }
@@ -308,8 +371,8 @@ update_history() {
 # shellcheck disable=SC2086
 # $1 = video link, $2 = video name, $3 = extra flags
 download() {
-    command -v "yt-dlp" >/dev/null && yt-dlp "$1" --no-skip-unavailable-fragments --fragment-retries infinite -N 16 -o "$download_dir/$2.mp4" $3 && return 0
-    ffmpeg -extension_picky 0 -loglevel error -stats -i "$1" -c copy "$download_dir/$2.mp4" $3
+    command -v "yt-dlp" >/dev/null && yt-dlp --referer "https://zokoanime.video/" "$1" --no-skip-unavailable-fragments --fragment-retries infinite -N 16 -o "$download_dir/$2.mp4" $3 && return 0
+    ffmpeg -extension_picky 0 -referer "https://zokoanime.video/" -loglevel error -stats -i "$1" -c copy "$download_dir/$2.mp4" $3
 }
 
 play_episode() {
@@ -323,12 +386,12 @@ play_episode() {
         debug) printf "All links:\n%s\nSelected link:\n%s\n" "$links" "$video_link" ;;
         android_mpv) nohup am start --user 0 -a android.intent.action.VIEW -d "$video_link" -n is.xyz.mpv/.MPVActivity -e "title" "${anime_title} Episode ${ep_no}" $player_extra_flags >/dev/null 2>&1 & ;;
         android_vlc) nohup am start --user 0 -a android.intent.action.VIEW -d "$video_link" -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -e "title" "${anime_title} Episode ${ep_no}" $player_extra_flags >/dev/null 2>&1 & ;;
-        *flatpak*mpv*) flatpak run io.mpv.Mpv $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 & ;;
+        *flatpak*mpv*) flatpak run io.mpv.Mpv --http-header-fields="Referer: https://zokoanime.video/" $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 & ;;
         *mpv*)
             if [ "$no_detach" = 0 ]; then
-                nohup $player_function $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --http-header-fields="Referer: https://zokoanime.video/" $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             else
-                $player_function $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link"
+                $player_function --http-header-fields="Referer: https://zokoanime.video/" $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link"
                 mpv_exitcode=$?
                 [ "$exit_after_play" = 1 ] && [ -z "$_range" ] && exit "$mpv_exitcode"
             fi
@@ -336,14 +399,14 @@ play_episode() {
         *iina*)
             if pgrep -f "IINA" >/dev/null 2>&1; then
                 # omit --keep-running when an IINA instance exists to prevent hanging
-                nohup $player_function $player_extra_flags --no-stdin --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --mpv-http-header-fields="Referer: https://zokoanime.video/" $player_extra_flags --no-stdin --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             else
-                nohup $player_function $player_extra_flags --no-stdin --keep-running --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --mpv-http-header-fields="Referer: https://zokoanime.video/" $player_extra_flags --no-stdin --keep-running --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             fi
             ;;
-        *vlc*) nohup $player_function $player_extra_flags --play-and-exit --meta-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 & ;;
-        *yncpla*) nohup $player_function $player_extra_flags "$video_link" -- --force-media-title="${anime_title} Episode ${ep_no}" >/dev/null 2>&1 & ;;
-        download) "$player_function" "$video_link" "${anime_title} Episode ${ep_no}" $player_extra_flags ;;
+        *vlc*) nohup $player_function --http-referrer="https://zokoanime.video/" $player_extra_flags --play-and-exit --meta-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 & ;;
+        *yncpla*) nohup $player_function $player_extra_flags "$video_link" -- --http-header-fields="Referer: https://zokoanime.video/" --force-media-title="${anime_title} Episode ${ep_no}" >/dev/null 2>&1 & ;;
+        download) "$player_function" "$video_link" "${anime_title} Episode ${ep_no}" "$player_extra_flags" ;;
         catt) nohup catt cast $player_extra_flags "$video_link" >/dev/null 2>&1 & ;;
         iSH)
             printf "\033]8;;vlc://%s\a~~~~~~~~~~~~~~~~~~~~\n~ Tap to open VLC ~\n~~~~~~~~~~~~~~~~~~~~\033]8;;\a\n" "$video_link"
@@ -390,13 +453,11 @@ play() {
 # MAIN
 
 # setup
-base_api="https://anidb.app"
-search_api="${base_api}/browse?q=%s"
-# search_api_alt="${base_api}/search/suggestions?q=%s"
-desc_api="${base_api}/anime/%s"
-episodes_api="${base_api}/api/frontend/anime/%s/episodes"
-m3u8_api="${base_api}/api/frontend/episode/%s/languages"
-
+base_api="https://hianime.at"
+search_api="${base_api}/search?keyword=%s"
+desc_api="${base_api}/%s"
+episodes_api="${base_api}/api/theme/episode/list/%s"
+servers_api="${base_api}/api/theme/episode/servers?episodeId=%s"
 ciphers='ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
 tls13_ciphers='TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
 agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -538,15 +599,17 @@ trap 'cleanup; exit 1' INT HUP TERM
 case "$source" in
     history)
         backup_old_hist
-        anime_list=$(while read -r ep_no anime_id anime_title; do process_hist_entry & done <"$histfile")
-        wait
+        anime_list=$(
+            while read -r ep_no anime_id anime_title; do process_hist_entry & done <"$histfile"
+            wait
+        )
         [ -z "$anime_list" ] && die "No unwatched series in history!"
         [ -z "${index##*[!0-9]*}" ] && anime_id=$(printf "%s" "$anime_list" | nl -w 2 | sed 's/^[[:space:]]//' | nth "Select anime: " | cut -f 1)
         [ -z "${index##*[!0-9]*}" ] || anime_id=$(printf "%s" "$anime_list" | sed -n "${index}p" | cut -f 1)
         [ -z "$anime_id" ] && exit 1
         anime_title=$(printf "%s" "$anime_list" | grep "^$anime_id	" | cut -f 2 | sed 's| - episode.*||')
-        anidb_desc "$anime_id" || true
-        episode_maps="$(anidb_episodes "$anime_id")" || exit 1
+        hianime_desc "$anime_id" || true
+        episode_maps="$(hianime_episodes "$anime_id")" || exit 1
         ep_list="$(printf "%s" "$episode_maps" | cut -f 2)"
         ep_no=$(printf "%s" "$anime_list" | grep "^$anime_id	" | sed -nE 's/.*- episode (.+)$/\1/p')
         ;;
@@ -564,15 +627,15 @@ case "$source" in
 
         query=$(printf "%s" "$query" | sed 's| |+|g')
 
-        anime_list=$(anidb_search "$query") || exit 1
+        anime_list=$(hianime_search "$query") || exit 1
         [ -z "$anime_list" ] && die "No results found!"
         [ "$index" -eq "$index" ] 2>/dev/null && result=$(printf "%s" "$anime_list" | sed -n "${index}p")
         [ -z "$index" ] && result=$(printf "%s" "$anime_list" | nl -w 2 | sed 's/^[[:space:]]//' | nth "Select anime: ")
         [ -z "$result" ] && die "Invalid anime selection"
         anime_title="$(printf "%s" "$result" | cut -f 2)"
         anime_id="$(printf "%s" "$result" | cut -f 1)"
-        anidb_desc "$anime_id" || true
-        episode_maps="$(anidb_episodes "$anime_id")" || exit 1
+        hianime_desc "$anime_id" || true
+        episode_maps="$(hianime_episodes "$anime_id")" || exit 1
         ep_list="$(printf '%s' "$episode_maps" | cut -f 2)"
         [ -z "$ep_no" ] && ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag")
         [ -z "$ep_no" ] && die "Invalid episode selection"
@@ -600,8 +663,8 @@ while cmd=$(printf "next\nreplay\nprevious\nselect$seasons_option\nchange_qualit
             [ -z "$new_anime" ] && die "Invalid season selection"
             anime_title="$(printf "%s" "$new_anime" | cut -f 2)"
             anime_id="$(printf "%s" "$new_anime" | cut -f 1)"
-            anidb_desc "$anime_id" || true
-            episode_maps="$(anidb_episodes "$anime_id")" || exit 1
+            hianime_desc "$anime_id" || true
+            episode_maps="$(hianime_episodes "$anime_id")" || exit 1
             ep_list="$(printf '%s' "$episode_maps" | cut -f 2)"
             ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag")
             [ -z "$ep_no" ] && die "Invalid episode selection"
