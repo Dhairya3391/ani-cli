@@ -142,8 +142,10 @@ dep_ch_failover() {
 }
 
 cleanup() {
-    tput sgr0               # clears colors
-    rm -f "${histfile}.new" # remove temp logfile
+    tput sgr0                    # clears colors
+    rm -f "${histfile}.new"      # remove temp logfile
+    rm -f "${histfile}.subs"     # remove temp subtitle url
+    rm -f "${histfile}.vtt"      # remove temp subtitle file
 }
 
 # SCRAPING
@@ -180,7 +182,8 @@ deobfuscate_blob() (
         _char=$((_byte ^ _key))
         _output="${_output}\\$((_char / 64))$(((_char / 8) % 8))$((_char % 8))"
     done
-    printf "%b" "$_output" | sed -n 's|.*"src":"\([^"]*\.m3u8[^"]*\)".*|\1|p'
+    printf "%s\n" "$(printf "%b" "$_output" | sed -n 's|.*"src":"\([^"]*\.m3u8[^"]*\)".*|\1|p')"
+    printf "%s\n" "$(printf "%b" "$_output" | sed -n 's|.*"subtitles":\[[^]]*"src":"\([^"]*\.vtt[^"]*\)".*|\1|p')"
 )
 
 # search the query and give results. format is (id \t name)
@@ -219,7 +222,10 @@ hianime_m3u8() {
     _ep_id=$(printf "%s" "$episode_maps" | sed -n "s|^\([0-9][0-9]*\)\t${1}$|\1|p")
     _lang="sub"
     [ "$2" = "dub" ] && _lang="dub"
-    [ -z "$_ep_id" ] && return 1
+    [ -z "$_ep_id" ] && {
+        rm -f "${histfile}.subs"
+        return 1
+    }
 
     # 1. Get servers
     #shellcheck disable=SC2059
@@ -230,11 +236,17 @@ hianime_m3u8() {
     _hash="$(printf "%s\n" "$_servers" | grep "data-type=\"${_lang}\"" | grep "data-server-name=\"HD-1\"" | sed -n 's|.*data-hash="\([^"]*\)".*|\1|p' | head -n 1)"
     [ -z "$_hash" ] && _hash="$(printf "%s\n" "$_servers" | grep "data-type=\"${_lang}\"" | sed -n 's|.*data-hash="\([^"]*\)".*|\1|p' | head -n 1)"
 
-    [ -z "$_hash" ] && return 1
+    [ -z "$_hash" ] && {
+        rm -f "${histfile}.subs"
+        return 1
+    }
 
     # 3. Base64 decode embed URL
     _embed_url="$(b64_decode "$_hash")"
-    [ -z "$_embed_url" ] && return 1
+    [ -z "$_embed_url" ] && {
+        rm -f "${histfile}.subs"
+        return 1
+    }
 
     # Extract mal_id for ani-skip
     mal_id="$(printf "%s" "$_embed_url" | sed -n 's|.*/stream/mal/\([0-9][0-9]*\)/.*|\1|p')"
@@ -242,11 +254,24 @@ hianime_m3u8() {
     # 4. Fetch embed HTML
     _embed_page="$(hianime_curl -e "${base_api}/" "$_embed_url")"
     _blob="$(printf "%s" "$_embed_page" | sed -n 's|.*window\.__P="\([^"]*\)".*|\1|p')"
-    [ -z "$_blob" ] && return 1
+    [ -z "$_blob" ] && {
+        rm -f "${histfile}.subs"
+        return 1
+    }
 
     # 5. Deobfuscate
-    _m3u8_master="$(deobfuscate_blob "$_blob")"
-    [ -z "$_m3u8_master" ] && return 1
+    _deobfuscated="$(printf "%s\n" "$(deobfuscate_blob "$_blob")" | sed '/^$/d')"
+    _m3u8_master="$(printf "%s\n" "$_deobfuscated" | sed -n '1p')"
+    _subs="$(printf "%s\n" "$_deobfuscated" | sed -n '2p')"
+    [ -z "$_m3u8_master" ] && {
+        rm -f "${histfile}.subs"
+        return 1
+    }
+    if [ -n "$_subs" ]; then
+        printf "%s\n" "$_subs" >"${histfile}.subs"
+    else
+        rm -f "${histfile}.subs"
+    fi
 
     # 6. Fetch the master playlist and expand quality variants.
     _m3u8_content="$(hianime_curl -e "https://zokoanime.video/" "$_m3u8_master")"
@@ -284,6 +309,19 @@ get_video_link() {
     links=$(hianime_m3u8 "$ep_no" "$mode" | sort -g -r -s)
     [ -z "$links" ] && die "No sources found for $mode!"
     info "hianime.at links fetched"
+    sub_link="$(cat "${histfile}.subs" 2>/dev/null)"
+    if [ -n "$sub_link" ]; then
+        # Download VTT locally for players that can use file paths; fallback to remote URL if download fails
+        if $curl_exe -sL -A "$agent" --max-time 10 $cipher_flag -e "https://zokoanime.video/" "$sub_link" -o "${histfile}.vtt" 2>/dev/null && [ -s "${histfile}.vtt" ]; then
+            sub_file="${histfile}.vtt"
+        else
+            rm -f "${histfile}.vtt"
+            sub_file=""
+        fi
+    else
+        rm -f "${histfile}.vtt"
+        sub_file=""
+    fi
     select_quality "$quality"
     # should never trigger but just in case
     if printf "%s" "$ep_list" | grep -q "^$ep_no$"; then
@@ -371,6 +409,7 @@ update_history() {
 # shellcheck disable=SC2086
 # $1 = video link, $2 = video name, $3 = extra flags
 download() {
+    [ -n "$sub_link" ] && $curl_exe -sL -A "$agent" --max-time 10 $cipher_flag -e "https://zokoanime.video/" "$sub_link" -o "$download_dir/$2.vtt" 2>/dev/null &
     command -v "yt-dlp" >/dev/null && yt-dlp --referer "https://zokoanime.video/" "$1" --no-skip-unavailable-fragments --fragment-retries infinite -N 16 -o "$download_dir/$2.mp4" $3 && return 0
     ffmpeg -extension_picky 0 -referer "https://zokoanime.video/" -loglevel error -stats -i "$1" -c copy "$download_dir/$2.mp4" $3
 }
@@ -379,19 +418,42 @@ play_episode() {
     [ "$log_episode" = 1 ] && [ "$player_function" != "debug" ] && [ "$player_function" != "download" ] && command -v logger >/dev/null && logger -t ani-cli "${anime_title} ${ep_no}"
     [ "$skip_intro" = 1 ] && skip_flag="$(ani-skip -i "$mal_id" -e "$canon_ep_no")"
     [ -z "$video_link" ] && get_video_link
+    # Resolve subtitle source: prefer local VTT, fallback to remote URL; flatpak can't see host tempfile
+    _sub_src=""
+    if [ -n "$sub_file" ] && [ -s "$sub_file" ]; then
+        _sub_src="$sub_file"
+    elif [ -n "$sub_link" ]; then
+        _sub_src="$sub_link"
+    fi
+    case "$player_function" in *flatpak*mpv*) [ -n "$sub_link" ] && _sub_src="$sub_link" ;; esac
+    if [ -n "$_sub_src" ]; then
+        sub_file_flag="--sub-file=$_sub_src"
+        # VLC per-input slave must be attached after URL via :sub-file (colon syntax) — global --sub-file is not reliably picked up for HLS
+        sub_vlc_flag=":sub-file=$_sub_src"
+        sub_sync_flag="--sub-file=$_sub_src"
+    else
+        sub_file_flag=""; sub_vlc_flag=""; sub_sync_flag=""
+    fi
+    # IINA: --sub-file is CLI alias (maps to --sub-files-append) not recognized by iina-cli;
+    # must use --mpv-sub-files (plural). Remote URLs not fetched by mpv via IINA, so only local file works.
+    if [ -n "$sub_file" ] && [ -s "$sub_file" ]; then
+        sub_iina_flag="--mpv-sub-files=$sub_file"
+    else
+        sub_iina_flag=""
+    fi
     # wait for the previous player to close (in range selection)
     wait
     # shellcheck disable=SC2086
     case "$player_function" in
-        debug) printf "All links:\n%s\nSelected link:\n%s\n" "$links" "$video_link" ;;
+        debug) printf "All links:\n%s\nSelected link:\n%s\nSubtitles:\n%s\n" "$links" "$video_link" "$sub_link" ;;
         android_mpv) nohup am start --user 0 -a android.intent.action.VIEW -d "$video_link" -n is.xyz.mpv/.MPVActivity -e "title" "${anime_title} Episode ${ep_no}" $player_extra_flags >/dev/null 2>&1 & ;;
         android_vlc) nohup am start --user 0 -a android.intent.action.VIEW -d "$video_link" -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -e "title" "${anime_title} Episode ${ep_no}" $player_extra_flags >/dev/null 2>&1 & ;;
-        *flatpak*mpv*) flatpak run io.mpv.Mpv --http-header-fields="Referer: https://zokoanime.video/" $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 & ;;
+        *flatpak*mpv*) flatpak run io.mpv.Mpv --http-header-fields="Referer: https://zokoanime.video/" $sub_file_flag $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 & ;;
         *mpv*)
             if [ "$no_detach" = 0 ]; then
-                nohup $player_function --http-header-fields="Referer: https://zokoanime.video/" $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --http-header-fields="Referer: https://zokoanime.video/" $sub_file_flag $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             else
-                $player_function --http-header-fields="Referer: https://zokoanime.video/" $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link"
+                $player_function --http-header-fields="Referer: https://zokoanime.video/" $sub_file_flag $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link"
                 mpv_exitcode=$?
                 [ "$exit_after_play" = 1 ] && [ -z "$_range" ] && exit "$mpv_exitcode"
             fi
@@ -399,13 +461,13 @@ play_episode() {
         *iina*)
             if pgrep -f "IINA" >/dev/null 2>&1; then
                 # omit --keep-running when an IINA instance exists to prevent hanging
-                nohup $player_function --mpv-http-header-fields="Referer: https://zokoanime.video/" $player_extra_flags --no-stdin --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --mpv-http-header-fields="Referer: https://zokoanime.video/" $sub_iina_flag $player_extra_flags --no-stdin --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             else
-                nohup $player_function --mpv-http-header-fields="Referer: https://zokoanime.video/" $player_extra_flags --no-stdin --keep-running --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --mpv-http-header-fields="Referer: https://zokoanime.video/" $sub_iina_flag $player_extra_flags --no-stdin --keep-running --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             fi
             ;;
-        *vlc*) nohup $player_function --http-referrer="https://zokoanime.video/" $player_extra_flags --play-and-exit --meta-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 & ;;
-        *yncpla*) nohup $player_function $player_extra_flags "$video_link" -- --http-header-fields="Referer: https://zokoanime.video/" --force-media-title="${anime_title} Episode ${ep_no}" >/dev/null 2>&1 & ;;
+        *vlc*) nohup $player_function --http-referrer="https://zokoanime.video/" $player_extra_flags --play-and-exit --meta-title="${anime_title} Episode ${ep_no}" "$video_link" $sub_vlc_flag >/dev/null 2>&1 & ;;
+        *yncpla*) nohup $player_function $player_extra_flags "$video_link" -- --http-header-fields="Referer: https://zokoanime.video/" $sub_sync_flag --force-media-title="${anime_title} Episode ${ep_no}" >/dev/null 2>&1 & ;;
         download) "$player_function" "$video_link" "${anime_title} Episode ${ep_no}" "$player_extra_flags" ;;
         catt) nohup catt cast $player_extra_flags "$video_link" >/dev/null 2>&1 & ;;
         iSH)
@@ -415,7 +477,11 @@ play_episode() {
         *) nohup $player_function $player_extra_flags "$video_link" >/dev/null 2>&1 & ;;
     esac
     replay="$video_link"
+    replay_sub="$sub_link"
+    replay_sub_file="$sub_file"
     unset video_link
+    unset sub_link
+    unset sub_file
     update_history
     [ "$menu_program" != "fzf" ] && wait
 }
@@ -655,7 +721,11 @@ play
 while cmd=$(printf "next\nreplay\nprevious\nselect$seasons_option\nchange_quality\nquit" | nth "Playing episode $ep_no of $anime_title... "); do
     case "$cmd" in
         next) ep_no=$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/{n;p;}") 2>/dev/null ;;
-        replay) video_link="$replay" ;;
+        replay)
+            video_link="$replay"
+            sub_link="$replay_sub"
+            sub_file="$replay_sub_file"
+            ;;
         previous) ep_no=$(printf "%s" "$ep_list" | sed -n "/^${ep_no}$/{g;1!p;};h") 2>/dev/null ;;
         select) ep_no=$(printf "%s" "$ep_list" | nth "Select episode: " "$menu_multi_flag") ;;
         change_season)
