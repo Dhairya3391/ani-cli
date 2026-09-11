@@ -1,5 +1,5 @@
 # Hacking ani-cli
-Ani-cli is set up to scrape one platform - currently hianime. Supporting multiple sources at a time would require more changes than we (the maintainers) find worth doing, for this reason any feature request asking for a new site is rejected.
+Ani-cli scrapes one provider at a time - hianime by default, anibd via `-p/--provider`. Providers are swappable functions (`<name>_search`, `<name>_episodes`, `<name>_media`) picked by the `$provider` variable, and history is keyed by anilist id so it survives switching.
 
 However ani-cli being open-source and the pirate anime streaming sites being so similar you can hack ani-cli to support any site that follows a few conventions.
 

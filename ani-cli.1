@@ -9,7 +9,7 @@ A shell script to browse and search anime from the command-line.
 .PD 0
 .P
 .PD
-This tool scrapes the site hianime.
+This tool scrapes the sites hianime (default) and anibd, selectable with -p.
 .PD 0
 .P
 .PD
@@ -35,7 +35,10 @@ Show logs.
 Show summary of options.
 .TP
 \fB\-q | --quality\fR \fI\,<best|worst|resolution>\/\fR
-Set the video quality. Default quality is best. The provider currently serves a single 1080p stream, other values fall back to best.
+Set the video quality. Default quality is best (highest available stream), other values fall back to best.
+.TP
+\fB\-p | --provider | --source\fR \fI\,<provider>\/\fR
+Select the provider: hianime (default, sub and dub with external english subtitles) or anibd (sub-only fallback with baked-in subtitles).
 .TP
 \fB\-s | --syncplay\fR
 Watch anime together with friends, using Syncplay (works with mpv only).
@@ -86,6 +89,9 @@ Controls the directory where files are downloaded. Default is the current dir.
 .TP
 \fBANI_CLI_QUALITY\fR
 Controls the scraped media's quality, a resolution such as 1080, or worst/best. Default is best.
+.TP
+\fBANI_CLI_PROVIDER\fR
+Controls the provider. Valid options are hianime or anibd. Default is hianime.
 .TP
 \fBANI_CLI_PLAYER\fR
 Sets the player ani-cli uses. Can be debug (print links), download (equivalent to -d), android_mpv (apk and am start), android_vlc (apk and am start), catt (for streaming to tv), or any player that can play urls. For defaults see working without arguments.
