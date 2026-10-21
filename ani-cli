@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version_number="5.2.0"
+version_number="5.3.0"
 
 # UI
 
@@ -66,7 +66,7 @@ help_info() {
       -q, --quality
         Specify the video quality
       -p, --provider, --source
-        Select provider: hianime (default), anibd
+        Select provider: hianime (default), miruro
       -v, --vlc
         Use VLC to play the video
       -V, --version
@@ -146,6 +146,8 @@ dep_ch_failover() {
 cleanup() {
     tput sgr0               # clears colors
     rm -f "${histfile}.new" # remove temp logfile
+    #shellcheck disable=SC2086
+    for _mm_tmp in ${miruro_tmps:-}; do rm -f "$_mm_tmp"; done
 }
 
 # SCRAPING
@@ -220,15 +222,30 @@ pick_sub() {
     [ -z "$sub_link" ] && sub_link="$(printf "%s\n" "$_subs" | head -n 1 | cut -f 2)"
 }
 
+# parse playlist content ($1, served from $2): sets links (quality >url
+# per line), m3u8_links's non-fatal core
+m3u8_parse() {
+    # a non-playlist body (error page, block page) must never masquerade as
+    # a default source; require the HLS magic so callers walk on
+    case "$1" in *#EXTM3U*) : ;; *)
+        links=""
+        return 1
+        ;;
+    esac
+    if printf "%s" "$1" | grep -q "#EXT-X-STREAM-INF"; then
+        links="$(printf "%s\n" "$1" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d' | sed "\|>https*://|!s|>|>${2%/*}/|" | sort -g -r -s)"
+    elif [ -n "$1" ]; then
+        links="default >$2"
+    else
+        links=""
+    fi
+    [ -n "$links" ]
+}
+
 # fetch master playlist ($1) with referer ($2): sets links (quality >url per line)
 m3u8_links() {
     _content="$(prov_curl "$1" -e "$2")"
-    if printf "%s" "$_content" | grep -q "#EXT-X-STREAM-INF"; then
-        links="$(printf "%s\n" "$_content" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d' | sed "\|>https*://|!s|>|>${1%/*}/|" | sort -g -r -s)"
-    else
-        links="default >$1"
-    fi
-    [ -n "$links" ]
+    m3u8_parse "$_content" "$1"
 }
 
 # resolves episode $1 in mode $2 (sub/dub): sets links (quality >url per line), sub_link, mal_id and refr
@@ -270,46 +287,380 @@ hianime_media() {
     m3u8_links "$_m3u8_master" "$refr"
 }
 
-# anibd.app provider: plain json apis, anilist ids natively, sub-only with baked-in subs
-
-# search the query and give results. format is (anilist_id \t name)
-anibd_search() {
-    #shellcheck disable=SC2059
-    _page="$(prov_curl "$(printf "$anibd_search_api" "$1")")" || return 1
-    printf "%s" "$_page" | tr '\n' ' ' | sed 's|}, *{|}\n{|g' |
-        sed -nE 's|.*"postname":[ ]*"([^"]+)".*"anilist":[ ]*"([0-9]+)".*|\2\t\1|p' |
-        sed -e "s|&#039;|'|g" -e 's|&quot;|"|g' -e "s|&amp;|\&|g" -e "s|&apos;|'|g" -e "s|&lt;|<|g" -e "s|&gt;|>|g"
+miruro_fetch() {
+    _mf_tries=0
+    while :; do
+        #shellcheck disable=SC2086
+        _mf_body="$($curl_exe -sL --compressed -A "$agent" --connect-timeout 8 --max-time 30 $cipher_flag "$@" 2>/dev/null)" && [ -n "$_mf_body" ] && break
+        _mf_tries=$((_mf_tries + 1))
+        [ "$_mf_tries" -ge 3 ] && return 1
+        sleep 1
+    done
+    printf "%s" "$_mf_body"
 }
 
-# get the episodes list of the selected anime. format is (link \t ep_no)
-anibd_episodes() {
-    #shellcheck disable=SC2059
-    _page="$(prov_curl "$(printf "$anibd_ep_api" "$1")")" || return 1
-    printf "%s" "$_page" | tr '\n' ' ' | sed 's|}, *{|}\n{|g' |
-        sed -nE 's|.*"name":[ ]*"0*([0-9]+(\.[0-9]+)?)".*"link":[ ]*"([^"]+)".*|\3\t\1|p'
+miruro_escape() {
+    printf "%s" "$1" | sed -e 's|&|%26|g' -e 's|=|%3D|g' -e 's|?|%3F|g' -e 's|#|%23|g'
 }
 
-# resolves episode $1 in mode $2: sets links and refr (subs are baked in, dub falls back to sub)
-anibd_media() {
-    [ "$2" = "dub" ] && info "anibd is sub-only, using sub"
-    _ep_link="$(printf "%s" "$episode_maps" | sed -nE "s|^([A-Za-z0-9_-]+)\t$(rxdot "$1")$|\1|p" | head -n 1)"
-    [ -z "$_ep_link" ] && return 1
-    #shellcheck disable=SC2059
-    _srv="$(prov_curl "$(printf "$anibd_link_api" "$_ep_link")" | sed 's|\\/|/|g; s|}, *{|}\n{|g')"
+mm_esc() {
+    sed -e 's|\\\\|@|g' -e 's|\\"|@|g'
+}
+
+mm_flat() {
+    sed -nE 's|^.*"data":\[||
+s|\],"uses":.*$||
+s|(.*)]\}$|\1|
+p'
+}
+
+mm_split() {
+    tr ',' '\n' |
+        sed -E ':a
+/^([^"]*("[^"]*"[^"]*)*"[^"]*|\[(.*[^]])?|\{(.*[^}])?)$/ {
+N
+s|\n|,|
+ba
+}'
+}
+
+mm_slots() {
+    mm_flat | mm_esc | mm_split >"$1"
+    wc -l <"$1" | tr -d "[:space:]"
+}
+
+mm_slot() {
+    sed -n "$(($1 + 1))p" "$2"
+}
+
+mm_member() {
+    printf "%s" "$1" | sed -nE 's|^.*"'"$2"'":([^,{}]+).*|\1|p' | head -n 1
+}
+
+mm_ref() {
+    _mr_ref="$(mm_member "$1" "$3")"
+    case "$_mr_ref" in '' | *[!0-9]*) return 1 ;;
+    esac
+    mm_slot "$_mr_ref" "$2"
+}
+
+mm_list() {
+    printf "%s" "$1" | tr -d '[]' | tr ',' '\n'
+}
+
+mm_value() {
+    sed -e 's|^null$||' -e 's|^"||' -e 's|"$||' -e 's|\\n| |g' -e 's|\\r| |g' -e 's|\\t| |g'
+}
+
+mm_chunk() {
+    case "$2" in
+        tracks) _mm_key="episodeNumber" ;;
+        *) _mm_key="$2" ;;
+    esac
+    grep -m 1 -E '^\{"type":"chunk","id":[0-9]+,"data":\[\{"'"$_mm_key"'":' "$1" 2>/dev/null
+}
+
+miruro_redirect_slug() {
+    _mr_loc="$(printf "%s" "$1" | sed -nE 's|.*"location":"([^"]+)".*|\1|p' | head -n 1)"
+    [ -z "$_mr_loc" ] && return 0
+    _mr_loc="${_mr_loc#*watch/}"
+    _mr_loc="${_mr_loc%%\?*}"
+    _mr_loc="${_mr_loc%/}"
+    printf "%s" "${_mr_loc#*/}"
+}
+
+miruro_map_write() {
+    [ -n "$1" ] || return 0
+    _mw_tmp="$(mktemp "${TMPDIR:-/tmp}/mm-map-XXXXXX")"
+    if [ -f "$miruro_map" ]; then
+        grep -vE "^$1	" "$miruro_map" 2>/dev/null >"$_mw_tmp"
+    fi
+    printf "%s\t%s\t%s\t%s\n" "$1" "${2:-}" "${3:-}" "${4:-}" >>"$_mw_tmp"
+    mv "$_mw_tmp" "$miruro_map"
+}
+
+miruro_al_titles() {
+    _mt_json="$($curl_exe -s --compressed --max-time 15 -H "Content-Type: application/json" -d "{\"query\":\"{Media(id:$1,type:ANIME){title{english romaji native}}}\"}" https://graphql.anilist.co 2>/dev/null)" ||
+        return 1
+    printf "%s" "$_mt_json" | sed -nE 's|.*"english":"([^"]*)".*|\1|p' | mm_value
+    printf "%s" "$_mt_json" | sed -nE 's|.*"romaji":"([^"]*)".*|\1|p' | mm_value
+    printf "%s" "$_mt_json" | sed -nE 's|.*"native":"([^"]*)".*|\1|p' | mm_value
+}
+
+miruro_item_title() { # $1 = item slot text, $2 = slot file
+    _mi_map="$(mm_ref "$1" "$2" title)" || return 1
+    for _mi_key in english romaji native; do
+        _mi_title="$(mm_ref "$_mi_map" "$2" "$_mi_key" | mm_value)" || continue
+        [ -z "$_mi_title" ] && continue
+        printf "%s" "$_mi_title"
+        return 0
+    done
+    return 1
+}
+
+miruro_ext_pick() { # $1 = ext-map slot text, $2 = slot file, $3 = id key; first non-blank string
+    _mp_list="$(mm_ref "$1" "$2" "$3")" || return 1
+    for _mp_e in $(mm_list "$_mp_list"); do
+        [ -n "$_mp_e" ] || continue
+        _mp_txt="$(mm_slot "$_mp_e" "$2" 2>/dev/null)" || continue
+        case "$_mp_txt" in
+            \"*\"*)
+                _mp_val="$(printf "%s" "$_mp_txt" | mm_value)"
+                [ -n "$_mp_val" ] || continue
+                printf "%s" "$_mp_val"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+miruro_search() {
+    _mm_page="$(miruro_fetch "$miruro_base/search/__data.json?q=$(miruro_escape "$1")")" ||
+        die "miruro: connection error"
+    [ -z "$_mm_page" ] && return 1
+    _mm_slots="$(mktemp "${TMPDIR:-/tmp}/mm-search-XXXXXX")"
+    miruro_tmps="$miruro_tmps $_mm_slots"
+    _mm_count="$(printf "%s" "$_mm_page" | mm_slots "$_mm_slots")"
+    case "$_mm_count" in '' | 0 | *[!0-9]*) return 1 ;;
+    esac
+    _mm_root="$(mm_slot 0 "$_mm_slots")"
+    _mm_items="$(mm_ref "$_mm_root" "$_mm_slots" items)" || return 1
+    for _mm_idref in $(mm_list "$_mm_items"); do
+        _mm_item="$(mm_slot "$_mm_idref" "$_mm_slots")"
+        _mm_ext="$(mm_ref "$_mm_item" "$_mm_slots" external_ids)" || continue
+        _mm_al="$(miruro_ext_pick "$_mm_ext" "$_mm_slots" anilist)" || continue
+        _mm_show="$(mm_ref "$_mm_item" "$_mm_slots" id | mm_value)" || continue
+        [ -z "$_mm_show" ] && continue
+        _mm_mal="$(miruro_ext_pick "$_mm_ext" "$_mm_slots" mal)"
+        miruro_map_write "$_mm_al" "$_mm_show" "" "$_mm_mal"
+        _mm_title="$(miruro_item_title "$_mm_item" "$_mm_slots")" || continue
+        printf "%s\t%s\n" "$_mm_al" "$_mm_title"
+    done
+}
+
+miruro_show_by_titles() {
+    _mmq_titles="$(miruro_al_titles "$1" 2>/dev/null)"
+    [ -n "$2" ] && _mmq_titles="$2
+$_mmq_titles"
+    printf "%s\n" "$_mmq_titles" | while IFS= read -r _mmq; do
+        [ -z "$_mmq" ] && continue
+        _mm_out="$(miruro_search "$_mmq")" || continue
+        [ -z "$_mm_out" ] && continue
+        _mm_found="$(printf "%s\n" "$_mm_out" | grep -m 1 -E "^$1	")"
+        [ -z "$_mm_found" ] && continue
+        printf "%s" "$(printf "%s" "$_mm_found" | cut -f 1)"
+        break
+    done
+}
+
+miruro_resolve() {
+    miruro_show=""
+    miruro_slug=""
+    miruro_mal=""
+    [ -n "$1" ] || return 1
+    _mm_row="$(grep -m 1 -E "^$1	" "$miruro_map" 2>/dev/null)"
+    if [ -n "$_mm_row" ]; then
+        miruro_show="$(printf "%s" "$_mm_row" | cut -f 2)"
+        miruro_slug="$(printf "%s" "$_mm_row" | cut -f 3)"
+        miruro_mal="$(printf "%s" "$_mm_row" | cut -f 4)"
+    fi
+    if [ -z "$miruro_show" ]; then
+        miruro_show="$(miruro_show_by_titles "$1" "$2")" || return 1
+        [ -n "$miruro_show" ] || return 1
+        _mm_row="$(grep -m 1 -E "^$1	" "$miruro_map" 2>/dev/null)"
+        miruro_slug="$(printf "%s" "$_mm_row" | cut -f 3)"
+        miruro_mal="$(printf "%s" "$_mm_row" | cut -f 4)"
+    fi
+    if [ -z "$miruro_slug" ]; then
+        _mm_body="$(miruro_fetch "$miruro_base/watch/$miruro_show/x/__data.json?ep=1")" || return 1
+        miruro_slug="$(miruro_redirect_slug "$_mm_body")"
+        [ -z "$miruro_slug" ] && miruro_slug="x"
+    fi
+    miruro_map_write "$1" "$miruro_show" "$miruro_slug" "$miruro_mal"
+}
+
+miruro_watch() {
+    miruro_resolve "$1" "$3" || return 1
+    _mm_path="$(mktemp "${TMPDIR:-/tmp}/mm-watch-XXXXXX")"
+    miruro_tmps="$miruro_tmps $_mm_path"
+    _mm_slug="$miruro_slug"
+    _mm_body="$(miruro_fetch "$miruro_base/watch/$miruro_show/$miruro_slug/__data.json?ep=$2")" || _mm_body=""
+    _mm_canon="$(miruro_redirect_slug "${_mm_body:-}")"
+    if [ -n "$_mm_canon" ] && [ "$_mm_canon" != "$miruro_slug" ]; then
+        _mm_slug="$_mm_canon"
+    elif [ -z "$_mm_body" ]; then
+        _mm_probe="$(miruro_fetch "$miruro_base/watch/$miruro_show/x/__data.json?ep=1")" || {
+            rm -f "$_mm_path"
+            return 1
+        }
+        _mm_canon="$(miruro_redirect_slug "$_mm_probe")"
+        if [ -n "$_mm_canon" ]; then
+            _mm_slug="$_mm_canon"
+        else
+            rm -f "$_mm_path"
+            return 1
+        fi
+    fi
+    if [ "$_mm_slug" != "$miruro_slug" ]; then
+        miruro_slug="$_mm_slug"
+        miruro_map_write "$1" "$miruro_show" "$miruro_slug" "$miruro_mal"
+        _mm_body="$(miruro_fetch "$miruro_base/watch/$miruro_show/$miruro_slug/__data.json?ep=$2")" || {
+            rm -f "$_mm_path"
+            return 1
+        }
+    fi
+    printf "%s" "$_mm_body" >"$_mm_path"
+    # the host intermittently serves a 200 document without any chunk
+    # (same as kari's upstream-changed signal); refetch a couple of times
+    _mm_tries=0
+    while [ -z "$(mm_chunk "$_mm_path" episodes)" ] && [ -z "$(mm_chunk "$_mm_path" tracks)" ]; do
+        _mm_tries=$((_mm_tries + 1))
+        [ "$_mm_tries" -ge 3 ] && return 1
+        sleep 1
+        _mm_body="$(miruro_fetch "$miruro_base/watch/$miruro_show/$miruro_slug/__data.json?ep=$2")" || return 1
+        printf "%s" "$_mm_body" >"$_mm_path"
+    done
+    printf "%s\n" "$_mm_path"
+}
+
+miruro_episodes() {
+    _mm_payload="$(miruro_watch "$1" 1 "$2")" || die "miruro: could not load the episode list"
+    _mm_slots="$(mktemp "${TMPDIR:-/tmp}/mm-ep-XXXXXX")"
+    miruro_tmps="$miruro_tmps $_mm_slots"
+    _mm_line="$(mm_chunk "$_mm_payload" episodes)"
+    [ -n "$_mm_line" ] || die "miruro: no episode chunk in the watch payload"
+    _mm_count="$(printf "%s\n" "$_mm_line" | mm_slots "$_mm_slots")"
+    case "$_mm_count" in '' | 0 | *[!0-9]*) die "miruro: malformed episode chunk" ;;
+    esac
+    _mm_root="$(mm_slot 0 "$_mm_slots")"
+    _mm_eps="$(mm_ref "$_mm_root" "$_mm_slots" episodes)" || die "miruro: no episode roster"
+    for _mm_epref in $(mm_list "$_mm_eps"); do
+        _mm_ep="$(mm_slot "$_mm_epref" "$_mm_slots")"
+        _mm_no="$(mm_ref "$_mm_ep" "$_mm_slots" number | mm_value 2>/dev/null)"
+        case "$_mm_no" in '' | 0 | *[!0-9]*) continue ;;
+        esac
+        printf "%s\t%s\n" "$_mm_no" "$_mm_no"
+    done | sort -n
+}
+
+miruro_sub_pick() {
+    _mm_subs="$(mm_ref "$1" "$2" subtitles)" || {
+        printf ""
+        return 0
+    }
+    _mi_pick=""
+    _mi_en=""
+    _mi_first=""
+    for _mm_subref in $(mm_list "$_mm_subs"); do
+        _mm_sub="$(mm_slot "$_mm_subref" "$2")"
+        _mm_file="$(mm_ref "$_mm_sub" "$2" file | mm_value 2>/dev/null)"
+        _mm_low="$(printf "%s" "$_mm_file" | tr '[:upper:]' '[:lower:]')"
+        case "$_mm_low" in
+            */video.m3u8* | *.m3u8* | *.mpd* | *.mp4* | *.m4s* | *.webm* | *.mkv*) continue ;;
+            *.vtt* | *.srt* | *.ass* | *.ssa* | *.ttml* | *.dfxp* | *.sbv* | *.lrc* | *sub*) ;;
+            *) continue ;;
+        esac
+        [ -z "$_mi_first" ] && _mi_first="$_mm_file"
+        if [ -z "$_mi_en" ]; then
+            _mi_lang="$(mm_ref "$_mm_sub" "$2" language | mm_value 2>/dev/null)"
+            case "$_mi_lang" in en*) _mi_en="$_mm_file" ;;
+            esac
+        fi
+        case "$(mm_ref "$_mm_sub" "$2" default 2>/dev/null)" in
+            true) _mi_pick="$_mm_file" && break ;;
+        esac
+    done
+    printf "%s" "${_mi_pick:-${_mi_en:-${_mi_first}}}"
+}
+
+miruro_media() { # $1 = ep_no, $2 = mode
     sub_link=""
     mal_id=""
-    for _play in $(printf "%s\n" "$_srv" | sed -nE 's|.*"link":[ ]*"([^"]+)".*|\1|p'); do
-        _page="$(prov_curl -e "$anibd_base/" "$_play")" || continue
-        _rel="$(printf "%s" "$_page" | sed -nE 's|.*videoUrl:[[:space:]]*"([^"]+)".*|\1|p' | head -n 1)"
-        [ -z "$_rel" ] && continue
-        case "$_rel" in
-            http*) _m3u8="$_rel" ;;
-            *) _host="${_play#*://}"; _host="${_host%%/*}"; _m3u8="${_play%%://*}://$_host$_rel" ;;
-        esac
-        _host="${_play#*://}"
-        refr="${_play%%://*}://${_host%%/*}/"
-        sub_link="$(printf "%s" "$_page" | sed -nE 's#.*"(file|src)":[ ]*"([^"]*\.vtt[^"]*)".*#\2#p' | head -n 1)"
-        m3u8_links "$_m3u8" "$refr" && return 0
+    _mm_al="${anime_id#*:}"
+    [ -n "$_mm_al" ] && [ -f "$miruro_map" ] &&
+        mal_id="$(grep -m 1 -E '^'"$_mm_al"'	' "$miruro_map" 2>/dev/null | cut -f 4)"
+    _mm_payload="$(miruro_watch "$_mm_al" "$1" "${anime_title:-}")" || return 1
+    _mm_slots="$(mktemp "${TMPDIR:-/tmp}/mm-tracks-XXXXXX")"
+    miruro_tmps="$miruro_tmps $_mm_slots"
+    _mm_line="$(mm_chunk "$_mm_payload" tracks)"
+    [ -n "$_mm_line" ] || return 1
+    _mm_count="$(printf "%s\n" "$_mm_line" | mm_slots "$_mm_slots")"
+    case "$_mm_count" in '' | 0 | *[!0-9]*) return 1 ;;
+    esac
+    _mm_root="$(mm_slot 0 "$_mm_slots")"
+    _mm_tracks="$(mm_ref "$_mm_root" "$_mm_slots" tracks)" || return 1
+    _mm_order="$(mm_ref "$_mm_root" "$_mm_slots" providerOrder)" || return 1
+    case "$2" in
+        dub) _mm_wanted="dub" ;;
+        *) _mm_wanted="ssub sub" ;;
+    esac
+    _mm_names=""
+    for _mm_oidx in $(mm_list "$_mm_order"); do
+        _mm_name="$(mm_slot "$_mm_oidx" "$_mm_slots" | mm_value 2>/dev/null)"
+        case "$_mm_name" in '') continue ;; esac
+        case " $_mm_names " in *" $_mm_name "*) continue ;; esac
+        _mm_names="$_mm_names $_mm_name"
+    done
+    # name any provider the upstream order list omits
+    for _mm_trackref in $(mm_list "$_mm_tracks"); do
+        _mm_track="$(mm_slot "$_mm_trackref" "$_mm_slots")"
+        _mm_tval="$(mm_ref "$_mm_track" "$_mm_slots" track | mm_value 2>/dev/null)"
+        case " $_mm_wanted " in *" $_mm_tval "*) ;; *) continue ;; esac
+        _mm_provs="$(mm_ref "$_mm_track" "$_mm_slots" providers)" || continue
+        for _mm_provref in $(mm_list "$_mm_provs"); do
+            _mm_prov="$(mm_slot "$_mm_provref" "$_mm_slots")"
+            _mm_pname="$(mm_ref "$_mm_prov" "$_mm_slots" provider | mm_value 2>/dev/null)"
+            case "$_mm_pname" in '') continue ;; esac
+            case " $_mm_names " in *" $_mm_pname "*) ;; *) _mm_names="$_mm_names $_mm_pname" ;; esac
+        done
+    done
+    for _mm_name in $_mm_names; do
+        for _mm_pool in $_mm_wanted; do
+            for _mm_trackref in $(mm_list "$_mm_tracks"); do
+                _mm_track="$(mm_slot "$_mm_trackref" "$_mm_slots")"
+                [ "$(mm_ref "$_mm_track" "$_mm_slots" track | mm_value 2>/dev/null)" = "$_mm_pool" ] || continue
+                _mm_provs="$(mm_ref "$_mm_track" "$_mm_slots" providers)" || continue
+                for _mm_provref in $(mm_list "$_mm_provs"); do
+                    _mm_prov="$(mm_slot "$_mm_provref" "$_mm_slots")"
+                    [ "$(mm_ref "$_mm_prov" "$_mm_slots" provider | mm_value 2>/dev/null)" = "$_mm_name" ] || continue
+                    _mm_prov_sub=""
+                    [ "$_mm_pool" = "ssub" ] && _mm_prov_sub="$(miruro_sub_pick "$_mm_prov" "$_mm_slots")"
+                    _mm_servers="$(mm_ref "$_mm_prov" "$_mm_slots" servers)" || continue
+                    for _mm_srvref in $(mm_list "$_mm_servers"); do
+                        _mm_srv="$(mm_slot "$_mm_srvref" "$_mm_slots")"
+                        _mm_streams="$(mm_ref "$_mm_srv" "$_mm_slots" streams)" || continue
+                        _mm_headers="$(mm_ref "$_mm_srv" "$_mm_slots" headers)" || continue
+                        _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Referer | mm_value 2>/dev/null)"
+                        [ -z "${_mm_refr:-}" ] && _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Origin | mm_value 2>/dev/null)"
+                        refr="${_mm_refr:-}"
+                        for _mm_stref in $(mm_list "$_mm_streams"); do
+                            _mm_stream="$(mm_slot "$_mm_stref" "$_mm_slots")"
+                            _mm_url="$(mm_ref "$_mm_stream" "$_mm_slots" url | mm_value 2>/dev/null)"
+                            case "$_mm_url" in http*) ;; *) continue ;;
+                            esac
+                            _mm_host="$(printf "%s" "$_mm_url" | sed -E 's|^[a-zA-Z0-9]*://||; s|/.*||; s|:.*||')"
+                            case "$_mm_host" in *.shiora.top | shiora.top) continue ;;
+                            esac
+                            _mm_fmt="$(mm_ref "$_mm_stream" "$_mm_slots" format | mm_value 2>/dev/null)"
+                            case "$_mm_fmt$_mm_url" in
+                                *".mp4"* | *mp4*)
+                                    links="default >$_mm_url"
+                                    sub_link="$_mm_prov_sub"
+                                    return 0
+                                    ;;
+                                *hls* | *".m3u8"*) ;;
+                                *) continue ;;
+                            esac
+                            if m3u8_parse "$(miruro_fetch "$_mm_url" -e "$refr")" "$_mm_url"; then
+                                sub_link="$_mm_prov_sub"
+                                return 0
+                            fi
+                        done
+                    done
+                done
+            done
+        done
     done
     return 1
 }
@@ -429,9 +780,9 @@ process_hist_entry() {
     else
         # same anime on this provider: anilist id resolves directly, else search the stored title
         case "$_entry_stable" in al:*) _entry_al="${_entry_stable#al:}" ;; *) _entry_al="" ;; esac
-        if [ "$provider" = "anibd" ] && [ -n "$_entry_al" ]; then
-            _entry_maps="$(anibd_episodes "$_entry_al")" || return 1
-            _entry_id="anibd:$_entry_al"
+        if [ "$provider" = "miruro" ] && [ -n "$_entry_al" ]; then
+            _entry_maps="$(miruro_episodes "$_entry_al" "$_entry_title")" || return 1
+            _entry_id="miruro:$_entry_al"
         else
             _entry_q="$(printf "%s" "$_entry_title" | sed 's| BD$||; s| |+|g')"
             _entry_all="$("${provider}_search" "$_entry_q" | sed 's| BD$||')" || return 1
@@ -451,7 +802,7 @@ process_hist_entry() {
 
 update_history() {
     case "$provider" in
-        anibd) _stable="al:${anime_id#*:}" ;;
+        miruro) _stable="al:${anime_id#*:}" ;;
         *)
             _stable=""
             if [ -n "$mal_id" ]; then
@@ -573,10 +924,7 @@ base_api="https://hianime.at"
 search_api="${base_api}/search?keyword=%s"
 episodes_api="${base_api}/api/theme/episode/list/%s"
 servers_api="${base_api}/api/theme/episode/servers?episodeId=%s"
-anibd_base="https://anibd.app"
-anibd_search_api="https://eng.animeapps.top/api/search3.php?keyword=%s"
-anibd_ep_api="https://epeng.animeapps.top/api2.php?epid=%s"
-anibd_link_api="https://epeng.animeapps.top/apilink.php?data=%s"
+miruro_base="https://barelystarted.miruro.tv"
 provider="${ANI_CLI_PROVIDER:-hianime}"
 ciphers='ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
 tls13_ciphers='TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
@@ -621,6 +969,10 @@ hist_dir="${ANI_CLI_HIST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ani-cli}"
 histfile="$hist_dir/ani-hsts"
 [ ! -f "$histfile" ] && : >"$histfile"
 almap="$hist_dir/al-map"
+# miruro resolution cache (al \t show id \t slug \t mal) and the devalue
+# slot tables of the current run, removed by cleanup
+miruro_map="$hist_dir/miruro-map"
+miruro_tmps=""
 
 source="${ANI_CLI_DEFAULT_SOURCE:-search}"
 branch="${ANI_CLI_BRANCH:-master}"
@@ -704,8 +1056,8 @@ done
 [ "$menu_program" = "rofi" ] && menu_multi_flag="-multi-select"
 
 case "$provider" in
-    hianime | anibd) ;;
-    *) die "unknown provider: $provider (supported: hianime, anibd)" ;;
+    hianime | miruro) ;;
+    *) die "unknown provider: $provider (supported: hianime, miruro)" ;;
 esac
 
 info "Checking dependencies..."

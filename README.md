@@ -1,35 +1,37 @@
+# ani-cli
+
 <p align=center>
 <br>
-<a href="http://makeapullrequest.com"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
-<a href="#Linux"><img src="https://img.shields.io/badge/os-linux-brightgreen">
-<a href="#MacOS"><img src="https://img.shields.io/badge/os-mac-brightgreen">
-<a href="#Android"><img src="https://img.shields.io/badge/os-android-brightgreen">
-<a href="#Windows"><img src="https://img.shields.io/badge/os-windows-yellowgreen">
-<a href="#iOS"><img src="https://img.shields.io/badge/os-ios-yellow">
-<a href="#Steam-deck"><img src="https://img.shields.io/badge/os-steamdeck-yellow">
+<a href="http://makeapullrequest.com"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
+<a href="#Linux"><img alt="Linux support" src="https://img.shields.io/badge/os-linux-brightgreen">
+<a href="#MacOS"><img alt="macOS support" src="https://img.shields.io/badge/os-mac-brightgreen">
+<a href="#Android"><img alt="Android support" src="https://img.shields.io/badge/os-android-brightgreen">
+<a href="#Windows"><img alt="Windows support" src="https://img.shields.io/badge/os-windows-yellowgreen">
+<a href="#iOS"><img alt="iOS support" src="https://img.shields.io/badge/os-ios-yellow">
+<a href="#Steam-deck"><img alt="Steam Deck support" src="https://img.shields.io/badge/os-steamdeck-yellow">
 <br>
 <p align=center>
-<a href="https://discord.gg/aqu7GpqVmR"><img src="https://invidget.switchblade.xyz/aqu7GpqVmR"></a>
-<a href="matrix.md"><img src="/.assets/matrix-logo.svg" height=110></a>
+<a href="https://discord.gg/aqu7GpqVmR"><img alt="Discord community" src="https://invidget.switchblade.xyz/aqu7GpqVmR"></a>
+<a href="matrix.md"><img alt="Matrix community" src="/.assets/matrix-logo.svg" height=110></a>
 <br>
 <a href="https://discord.gg/aqu7GpqVmR">Discord</a>
 <a href="https://github.com/pystardust/ani-cli/blob/master/matrix.md">Matrix</a>
 </p>
-<a href="https://github.com/port19x"><img src="https://img.shields.io/badge/lead-port19x-lightblue"></a>
-<a href="https://github.com/CoolnsX"><img src="https://img.shields.io/badge/maintainer-CoolnsX-blue"></a>
-<a href="https://github.com/justchokingaround"><img src="https://img.shields.io/badge/maintainer-justchokingaround-blue"></a>
-<a href="https://github.com/Derisis13"><img src="https://img.shields.io/badge/maintainer-Derisis13-blue"></a>
-<a href="https://github.com/71zenith"><img src="https://img.shields.io/badge/maintainer-71zenith-blue"></a>
-<a href="https://github.com/vorlie"><img src="https://img.shields.io/badge/maintainer-vorlie-blue"></a>
+<a href="https://github.com/port19x"><img alt="Lead: port19x" src="https://img.shields.io/badge/lead-port19x-lightblue"></a>
+<a href="https://github.com/CoolnsX"><img alt="Maintainer: CoolnsX" src="https://img.shields.io/badge/maintainer-CoolnsX-blue"></a>
+<a href="https://github.com/justchokingaround"><img alt="Maintainer: justchokingaround" src="https://img.shields.io/badge/maintainer-justchokingaround-blue"></a>
+<a href="https://github.com/Derisis13"><img alt="Maintainer: Derisis13" src="https://img.shields.io/badge/maintainer-Derisis13-blue"></a>
+<a href="https://github.com/71zenith"><img alt="Maintainer: 71zenith" src="https://img.shields.io/badge/maintainer-71zenith-blue"></a>
+<a href="https://github.com/vorlie"><img alt="Maintainer: vorlie" src="https://img.shields.io/badge/maintainer-vorlie-blue"></a>
 
 </p>
 
 <h3 align="center">
-A cli to browse and watch anime (alone AND with friends). This tool scrapes the site <a href="https://hianime.at/">hianime</a> (default) with <a href="https://anibd.app/">anibd</a> as a fallback provider (`-p anibd`).
+A cli to browse and watch anime (alone AND with friends). This tool scrapes the site <a href="https://hianime.at/">hianime</a> (default) with <a href="https://barelystarted.miruro.tv/">miruro</a> as a fallback provider (`-p miruro`).
 </h3>
 
 <h1 align="center">
-	Showcase
+ Showcase
 </h1>
 
 [ani-cli-demo.webm](https://user-images.githubusercontent.com/44473782/224679247-0856e652-f187-4865-bbcf-5a8e5cf830da.webm)
@@ -54,7 +56,7 @@ A cli to browse and watch anime (alone AND with friends). This tool scrapes the 
 If you encounter `Blocked by cloudflare. Try installing curl-impersonate` then install `curl-impersonate` from your respective package manager.
 If it is not available, then download from their [github](https://github.com/lwthiker/curl-impersonate) by running the following commands.
 
-```sh
+```shsh
 curl -LO "https://github.com/lwthiker/curl-impersonate/releases/download/v0.6.1/curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz"
 sudo tar xf curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz -C /usr/local/bin
 ```
@@ -82,37 +84,45 @@ If the one for your platform is up-to-date we suggest going with it.*
 ```sh
 sudo apt install ani-cli
 ```
+
 </details>
 
 <details><summary>Fedora</summary>
 
-To install mpv (and vlc) you need _RPM Fusion free_ enabled. Simply follow the instructions here: https://rpmfusion.org/Configuration
-To be able to install syncplay, you'll need to enable this copr repo (instructions included): https://copr.fedorainfracloud.org/coprs/batmanfeynman/syncplay/.
+To install mpv (and vlc) you need *RPM Fusion free* enabled. Simply follow the instructions here: <https://rpmfusion.org/Configuration>
+To be able to install syncplay, you'll need to enable this copr repo (instructions included): <https://copr.fedorainfracloud.org/coprs/batmanfeynman/syncplay/>.
 
 To install ani-cli:
+
 ```sh
 sudo dnf copr enable derisis13/ani-cli
 sudo dnf install ani-cli
 ```
+
 *If for your distro uses rpm and you would like to see a native package, open an issue.*
 
 </details><details><summary>Arch</summary>
 
 Build and install from the AUR:
+
 ```sh
 yay -S ani-cli
 ```
+
 Also consider `ani-cli-git`
 
 </details><details><summary>Gentoo</summary>
 
 Build and install from the GURU:
+
 ```sh
 sudo eselect repository enable guru
 sudo emaint sync -r guru
 sudo emerge -a ani-cli
 ```
+
 Consider using the 9999 ebuild.
+
 ```sh
 sudo emerge -a =app-misc/ani-cli-9999
 ```
@@ -120,17 +130,19 @@ sudo emerge -a =app-misc/ani-cli-9999
 </details><details><summary>OpenSuse</summary>
 
 On Suse the provided MPV and VLC packages are missing features that are used by ani-cli. The only required is the "Only Essentials" repository which has versions for each Suse release.
-You can find instructions on this [here](https://en.opensuse.org/Additional_package_repositories#Packman).
+You can find instructions in the [openSUSE Packman documentation](https://en.opensuse.org/Additional_package_repositories#Packman).
 
 To add the ani-cli copr repo, update then install ani-cli run (on both versions):
+
 ```sh
 zypper addrepo https://download.copr.fedorainfracloud.org/results/derisis13/ani-cli/opensuse-tumbleweed-x86_64/ ani-cli
 zypper dup
 zypper install ani-cli
 ```
+
 You'll get a warning about `Signature verification failed [4-Signatures public key is not available]` but this can be ignored from the prompt.
 
-*Note: package is noarch, so any architecture should work, even though the repo is labelled x86-64*
+Note: The package is architecture-independent, so it should work on any architecture even though the repository is labelled x86-64.
 
 </details></details><details><summary><b>MacOS</b></summary>
 
@@ -141,7 +153,8 @@ brew tap pystardust/ani-cli https://github.com/pystardust/ani-cli.git
 brew trust pystardust/ani-cli
 brew install ani-cli && brew install --cask iina
 ```
-*Why iina and not mpv? Drop-in replacement for mpv for MacOS. Integrates well with OSX UI. Excellent support for M1. Open Source.*
+
+Iina is preferred over mpv because it integrates well with macOS, offers excellent M1 support, and is open source.
 
 </details><details><summary><b>Android</b></summary>
 
@@ -153,7 +166,9 @@ Install termux [(Guide)](https://termux.com/)
 pkg up -y
 pkg install ani-cli
 ```
+
 If you're using Android 14 make sure to run this due to [#1206](https://github.com/pystardust/ani-cli/issues/1206):
+
 ```sh
 pkg install termux-am
 ```
@@ -195,6 +210,7 @@ Then, navigate to `Settings > Profiles > Add a new profile`. Click `+ New empty 
 ![windows-terminal-git-bash-2.png](.assets/windows-terminal-git-bash-2.png)
 
 Next:
+
 - If you installed git with scoop: Set *Name* as "Git Bash", set *Command line* as `%GIT_INSTALL_ROOT%\bin\bash.exe -i -l`, and set *Icon* as `%GIT_INSTALL_ROOT%\mingw64\share\git\git-for-windows.ico`.
 - If you installed git by other means: Set *Name* as "Git Bash", set *Command line* as `C:\Program Files\Git\bin\bash.exe -i -l`, and set *Icon* as `C:\Program Files\Git\mingw64\share\git\git-for-windows.ico`.
 
@@ -235,8 +251,8 @@ If you have a problem, please update ani-cli to the latest version with `ani-cli
 
 - Stuck in "Search anime:". This shouldn't happen if you are using the Windows Terminal + Bash setup described above. It happens if you are using the Git Bash terminal (i.e., the mintty terminal). This is a problem between fzf and mintty, which should be resolved in future versions of fzf. For the time being, either use the Windows Terminal setup described above or, if you are dead-set on using the mintty terminal, run `export MSYS=enable_pcon` before running ani-cli.
 - "No such file or directory" or WSL-related errors: This shouldn't happen if you are using the Window Terminal + Bash setup described above. This happens if you run ani-cli in powershell or cmd. This is due WSL's bash.exe being called instead of Git for Windows' bash.exe in `%USERPROFILE%\scoop\shims\ani-cli.cmd`. If you must use powershell or cmd, edit the `%USERPROFILE%\scoop\shims\ani-cli.cmd` file. In File Explorer, go to the `C:\Users\USERNAME\scoop\shims` directory and open the `ani-cli.cmd` file with notepad. Next:
-    - If you installed git with scoop, replace `@bash` with `@"%GIT_INSTALL_ROOT%\bin\bash.exe"`, or
-    - If you installed git by other means, replace `@bash` with `@"C:\Program Files\Git\bin\bash.exe"`.
+  - If you installed git with scoop, replace `@bash` with `@"%GIT_INSTALL_ROOT%\bin\bash.exe"`, or
+  - If you installed git by other means, replace `@bash` with `@"C:\Program Files\Git\bin\bash.exe"`.
 This should be fixed if the ani-cli scoop manifest gets updated in [this PR](https://github.com/ScoopInstaller/Extras/pull/13342).
 - curl can cause issues. ani-cli has been tested unsuccessfully with curl `7.83.1` and successfully with `7.86.0`. If you run into issues, try installing a newer one with scoop.
 - If you installed mpv with scoop, your mpv configuration will get read from `C:\Users\USERNAME\scoop\apps\mpv\current\portable_config`. See [the mpv documentation](https://mpv.io/manual/stable/) regarding `portable_config` for more details.
@@ -245,7 +261,7 @@ This should be fixed if the ani-cli scoop manifest gets updated in [this PR](htt
 
 Follow the installation instructions of your Linux distribution.
 
-Note that the media player (mpv or vlc) will need to be installed on Windows, not WSL. See the justification for this in the comment [(here)](https://github.com/pystardust/ani-cli/issues/1266#issuecomment-1926945757). Instructions on how to use the media player from WSL instead are also included in the linked comment.
+Note that the media player (mpv or vlc) will need to be installed on Windows, not WSL. See the justification in the [Windows media player issue comment](https://github.com/pystardust/ani-cli/issues/1266#issuecomment-1926945757). Instructions on how to use the media player from WSL instead are also included in the linked comment.
 
 When installing the media player on Windows, make sure that it is on the Windows Path. An easy way to ensure this is to download the media player with a package manager (on Windows, not WSL) such as scoop.
 
@@ -254,7 +270,8 @@ When installing the media player on Windows, make sure that it is on the Windows
 Install iSH and VLC from the app store.
 
 Make sure apk is updated using
-```
+
+```sh
 cat > /etc/apk/repositories <<'EOF'
 https://dl-cdn.alpinelinux.org/alpine/edge/main
 https://dl-cdn.alpinelinux.org/alpine/edge/community
@@ -266,9 +283,10 @@ apk add --upgrade apk-tools
 apk upgrade --available
 ```
 
-Further details: https://github.com/ish-app/ish/issues/2530
+Further details are available in the [iSH issue discussion](https://github.com/ish-app/ish/issues/2530).
 
 Then run this:
+
 ```sh
 apk add grep sed curl-impersonate bash fzf git ncurses patch ffmpeg
 git clone --depth 1 https://github.com/pystardust/ani-cli ~/.ani-cli
@@ -276,6 +294,7 @@ cp ~/.ani-cli/ani-cli /usr/local/bin/ani-cli
 chmod +x /usr/local/bin/ani-cli
 rm -rf ~/.ani-cli
 ```
+
 For Downloads on iOS in iSH, omit the usual `-d` flag and instead select the Download option in VLC:
 <img width="1170" height="1177" alt="image" src="https://github.com/user-attachments/assets/da25884b-a53d-4888-bee1-4867a8216ddd" />
 
@@ -283,11 +302,11 @@ For Downloads on iOS in iSH, omit the usual `-d` flag and instead select the Dow
 
 <details><summary><b>Steam Deck</b></summary>
 
-#### Copypaste script:
+#### Copypaste script
 
-* Switch to Desktop mode (`STEAM` Button > Power > Switch to Desktop)
-* Open `Konsole` (Steam Deck Icon in bottom left corner > System > Konsole)
-* Copy the script, paste it in the CLI and press Enter("A" button on Steam Deck)
+- Switch to Desktop mode (`STEAM` Button > Power > Switch to Desktop)
+- Open `Konsole` (Steam Deck Icon in bottom left corner > System > Konsole)
+- Copy the script, paste it in the CLI and press Enter("A" button on Steam Deck)
 
 ```sh
 [ ! -d ~/.local/bin ] && mkdir ~/.local/bin && echo "export PATH=$HOME/.local/bin:\$PATH" >> ".$(echo $SHELL | sed -nE "s|.*/(.*)\$|\1|p")rc"
@@ -308,23 +327,26 @@ cp ~/.ani-cli/ani-cli ~/.local/bin/
 
 flatpak install io.mpv.Mpv
 ```
+
 press enter("A" button on Steam Deck) on questions
 
-#### Installation in steps:
+#### Installation in steps
 
-##### Install mpv (Flatpak version):
+##### Install mpv (Flatpak version)
 
 ```sh
 flatpak install io.mpv.Mpv
 ```
+
 press enter("A" button on Steam Deck) on questions
 
-##### Install [fzf](https://github.com/junegunn/fzf):
+##### Install [fzf](https://github.com/junegunn/fzf)
 
 ```sh
 git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
 ~/.fzf/install
 ```
+
 press enter("A" button on Steam Deck) on questions
 
 ##### Make a ~/.local/bin folder if doesn't exist and add it to $PATH
@@ -333,14 +355,14 @@ press enter("A" button on Steam Deck) on questions
 [ ! -d ~/.local/bin ] && mkdir ~/.local/bin && echo "export PATH=$HOME/.local/bin:\$PATH" >> ".$(echo $SHELL | sed -nE "s|.*/(.*)\$|\1|p")rc"
 ```
 
-##### Install [yt-dlp](https://github.com/yt-dlp/yt-dlp) (needed for download feature only):
+##### Install [yt-dlp](https://github.com/yt-dlp/yt-dlp) (needed for download feature only)
 
 ```sh
 curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
 chmod +x ~/.local/bin/yt-dlp
 ```
 
-##### Install [patch](https://savannah.gnu.org/projects/patch/) (needed for self-update feature [ -U ] ):
+##### Install [patch](https://savannah.gnu.org/projects/patch/) (needed for self-update feature [ -U ] )
 
 ```sh
 mkdir ~/.patch
@@ -349,22 +371,23 @@ tar xvf ~/.patch/patch.tar.zst -C ~/.patch/
 cp ~/.patch/usr/bin/patch ~/.local/bin/
 ```
 
-##### Install ani-cli:
+##### Install ani-cli
 
 ```sh
 git clone https://github.com/pystardust/ani-cli.git ~/.ani-cli
 cp ~/.ani-cli/ani-cli ~/.local/bin/
 ```
 
-##### Optional: add desktop entry:
+##### Optional: add desktop entry
 
-```
+```sh
 echo '[Desktop Entry]
 Encoding=UTF-8
 Type=Application
 Exec=bash -c "source $HOME/.'$(echo $SHELL | sed -nE "s|.*/(.*)\$|\1|p")'rc && konsole --fullscreen -e ani-cli"
 Name=ani-cli' > $HOME/.local/share/applications/ani-cli.desktop
 ```
+
 The .desktop entry will allow to start ani-cli in Konsole directly from "Gaming Mode"
 In Steam Desktop app:
 `Add game` > `Add a non-steam game` > tick a box for `ani-cli` > `Add selected programs`
@@ -372,7 +395,7 @@ In Steam Desktop app:
 
 <details><summary><b>FreeBSD</b></summary>
 
-#### Copypaste script:
+#### Copypaste script
 
 ```sh
 sudo pkg install mpv fzf yt-dlp patch git
@@ -381,15 +404,15 @@ sudo cp ani-cli/ani-cli /usr/local/bin
 rm -rf ani-cli
 ```
 
-#### Installation in steps:
+#### Installation in steps
 
-##### Install dependencies:
+##### Install dependencies
 
 ```sh
 sudo pkg install mpv fzf yt-dlp patch
 ```
 
-##### Install ani-cli:
+##### Install ani-cli
 
 install git if you haven't already
 
@@ -413,11 +436,13 @@ rm -rf ani-cli
 
 The problem is that you need to install and use nix for this to work, and for that you will need to use either <a href="https://next.open-store.io/app/nixmanager.chromiumos-guy/">NixManager</a> (GUI) or <a href="https://github.com/tuxecure/crackle">crackle</a> (CLI). we will be using crackle for copypaste script but feel free to use one or the other.
 
-#### Copypaste script:
+#### Copypaste script
+
 ```sh
 wget -q -O - https://github.com/tuxecure/crackle/releases/latest/download/upgradefunc| bash -s setup
 crackle install ani-cli mpv
 ```
+
 This can be achieved from NixManager as well, my personal recommendation is to use NixManager as GUI is easier to use on phones.
 
 </details>
@@ -438,71 +463,100 @@ rm -rf ani-cli
 
 <details>
 
-* apt:
+- apt:
+
 ```sh
 sudo apt remove ani-cli
 # to remove the repository from apt
 sudo rm -f /etc/apt/trusted.gpg.d/ani-cli.asc /etc/apt/sources.list.d/ani-cli-debian.list
 ```
-* dnf:
+
+- dnf:
+
 ```sh
 sudo dnf remove ani-cli      # for ani-cli
 # disable the repo in dnf
 dnf copr disable derisis13/ani-cli
 ```
+
 You might want to uninstall RPM fusion if you don't use it otherwise
-* zypper:
+
+- zypper:
+
 ```sh
 zypper remove ani-cli
 zypper removerepo ani-cli
 ```
+
 You might want to remove `packman-essentials` if you don't need it otherwise
-* AUR:
+
+- AUR:
+
 ```sh
 yay -R ani-cli
 ```
-* Scoop:
+
+- Scoop:
+
 ```sh
 scoop uninstall ani-cli
 ```
-* Linux:
+
+- Linux:
+
 ```sh
 sudo rm "/usr/local/bin/ani-cli"
 ```
-* Mac:
+
+- Mac:
+
 ```sh
 brew uninstall ani-cli && brew untap pystardust/ani-cli
 ```
-* Windows:
+
+- Windows:
 In **Git Bash** run (as administrator):
+
 ```sh
 rm "/usr/bin/ani-cli"
 ```
-* Termux package
+
+- Termux package
+
 ```sh
 pkg remove ani-cli
 ```
-* Android:
+
+- Android:
+
 ```sh
 rm "$PREFIX/bin/ani-cli"
 ```
-* Steam Deck
+
+- Steam Deck
+
 ```sh
 rm "~/.local/bin/ani-cli"
 rm -rf ~/.ani-cli
 ```
+
 optionally: remove dependencies:
+
 ```sh
 rm ~/.local/bin/yt-dlp
 rm -rf "~/.fzf"
 flatpak uninstall io.mpv.Mpv
 ```
-* iOS
-```
+
+- iOS
+
+```sh
 rm -rf /usr/local/bin/ani-cli
 ```
+
 To uninstall other dependencies:
-```
+
+```sh
 apk del grep sed curl fzf git ffmpeg ncurses
 ```
 
@@ -532,17 +586,18 @@ Ani-skip uses the external lua script function of mpv and as such â€“ for now â€
 **Warning:** For now, ani-skip does **not** seem to work under Windows.
 
 ## FAQ
+
 <details>
-	
-* Can I change subtitle language or turn them off? - Subtitles are a separate english track handed to the player, so you can toggle them there (mpv: press `v`). Other languages are not offered.
-* Can I watch dub? - Yes, use `--dub`.
-* Can I change dub language? - No.
-* Can I change media source? - Yes, use `-p provider`, for example `ani-cli -p anibd one piece`. Supported providers are `hianime` (default) and `anibd` (sub-only fallback). History is keyed by anilist id, so it carries over when you switch.
-* Can I use vlc? - Yes, use `--vlc` or `export ANI_CLI_PLAYER=vlc`.
-* Can I adjust resolution? - Yes, use `-q resolution`, for example `ani-cli -q 1080`. The best (highest) available stream is used by default, other values fall back to best.
-* How can I download? - Use `-d`, it will download into your working directory.
-* Can i change download folder? - Yes, set the `ANI_CLI_DOWNLOAD_DIR` to your desired location.
-* How can I bulk download? - `Use -d -e firstepisode-lastepisode`, for example `ani-cli onepiece -d -e 1-1000`.
+
+- Can I change subtitle language or turn them off? - Subtitles are a separate english track handed to the player, so you can toggle them there (mpv: press `v`). Other languages are not offered.
+- Can I watch dub? - Yes, use `--dub`.
+- Can I change dub language? - No.
+- Can I change media source? - Yes, use `-p provider`, for example `ani-cli -p miruro one piece`. Supported providers are `hianime` (default) and `miruro` (anilist-keyed fallback). History is keyed by anilist id, so it carries over when you switch.
+- Can I use vlc? - Yes, use `--vlc` or `export ANI_CLI_PLAYER=vlc`.
+- Can I adjust resolution? - Yes, use `-q resolution`, for example `ani-cli -q 1080`. The best (highest) available stream is used by default, other values fall back to best.
+- How can I download? - Use `-d`, it will download into your working directory.
+- Can i change download folder? - Yes, set the `ANI_CLI_DOWNLOAD_DIR` to your desired location.
+- How can I bulk download? - `Use -d -e firstepisode-lastepisode`, for example `ani-cli onepiece -d -e 1-1000`.
 
 **Note:** All features are documented in `ani-cli --help`.
 
@@ -550,11 +605,11 @@ Ani-skip uses the external lua script function of mpv and as such â€“ for now â€
 
 ## Homies
 
-* [ani-cli-rs](https://github.com/vorlie/ani-cli-rs): A cross-platform Rust port of ani-cli with two independent Anikoto catalogs and native MegaPlay/KotoCDN playback. (Rust)
-* [jerry](https://github.com/justchokingaround/jerry): stream anime with anilist tracking and syncing, with discord presence (Shell)
-* [anipy-cli](https://github.com/sdaqo/anipy-cli): ani-cli rewritten in python (Python)
-* [mov-cli](https://github.com/mov-cli/mov-cli): Watch everything from your terminal. (Python)
-* [doccli](https://github.com/TowarzyszFatCat/doccli): [LINUX / WINDOWS] A CLI to watch anime with ENGLISH sub/dub or POLISH subtitles options, AniList integration, Discord RPC, and native Windows installer (Python)
-* [GoAnime](https://github.com/alvarorichard/GoAnime): A TUI tool to browse, play, and download anime in Portuguese and English, with Discord RPC, AniList integration, and intro skipping. (Go)
-* [Curd](https://github.com/Wraient/curd): A CLI tool to watch anime with Anilist, Discord RPC, Skip Intro/Outro/Filler/Recap (Go)
-* [ani-skip](https://github.com/synacktraa/ani-skip): Automatically skip opening and ending sequences for IINA on MacOS (Typescript, official IINA plugin API)
+- [ani-cli-rs](https://github.com/vorlie/ani-cli-rs): A cross-platform Rust port of ani-cli with two independent Anikoto catalogs and native MegaPlay/KotoCDN playback. (Rust)
+- [jerry](https://github.com/justchokingaround/jerry): stream anime with anilist tracking and syncing, with discord presence (Shell)
+- [anipy-cli](https://github.com/sdaqo/anipy-cli): ani-cli rewritten in python (Python)
+- [mov-cli](https://github.com/mov-cli/mov-cli): Watch everything from your terminal. (Python)
+- [doccli](https://github.com/TowarzyszFatCat/doccli): [LINUX / WINDOWS] A CLI to watch anime with ENGLISH sub/dub or POLISH subtitles options, AniList integration, Discord RPC, and native Windows installer (Python)
+- [GoAnime](https://github.com/alvarorichard/GoAnime): A TUI tool to browse, play, and download anime in Portuguese and English, with Discord RPC, AniList integration, and intro skipping. (Go)
+- [Curd](https://github.com/Wraient/curd): A CLI tool to watch anime with Anilist, Discord RPC, Skip Intro/Outro/Filler/Recap (Go)
+- [ani-skip](https://github.com/synacktraa/ani-skip): Automatically skip opening and ending sequences for IINA on MacOS (Typescript, official IINA plugin API)
