@@ -925,7 +925,7 @@ search_api="${base_api}/search?keyword=%s"
 episodes_api="${base_api}/api/theme/episode/list/%s"
 servers_api="${base_api}/api/theme/episode/servers?episodeId=%s"
 miruro_base="https://barelystarted.miruro.tv"
-provider="${ANI_CLI_PROVIDER:-hianime}"
+provider="${ANI_CLI_PROVIDER:-miruro}"
 ciphers='ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
 tls13_ciphers='TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
 agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
