@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version_number="5.3.0"
+version_number="5.4.0"
 
 # UI
 
@@ -302,14 +302,16 @@ miruro_fetch() {
         #shellcheck disable=SC2086
         _mf_body="$($curl_exe -sL --compressed -A "$agent" --connect-timeout 8 --max-time 30 $cipher_flag "$@" 2>/dev/null)" && [ -n "$_mf_body" ] && break
         _mf_tries=$((_mf_tries + 1))
-        [ "$_mf_tries" -ge 3 ] && return 1
+        # the source sweep lowers this via _mf_max (a dead host must not burn
+        # three tries plus sleeps); the site document keeps its retries
+        [ "$_mf_tries" -ge "${_mf_max:-3}" ] && return 1
         sleep 1
     done
     printf "%s" "$_mf_body"
 }
 
 miruro_escape() {
-    printf "%s" "$1" | sed -e 's|&|%26|g' -e 's|=|%3D|g' -e 's|?|%3F|g' -e 's|#|%23|g'
+    printf "%s" "$1" | sed -e 's| |%20|g' -e 's|&|%26|g' -e 's|=|%3D|g' -e 's|?|%3F|g' -e 's|#|%23|g'
 }
 
 mm_esc() {
@@ -346,6 +348,19 @@ mm_member() {
     printf "%s" "$1" | sed -nE 's|^.*"'"$2"'":([^,{}]+).*|\1|p' | head -n 1
 }
 
+# fork-free mm_member for the big rosters: devalue inlines primitives (the
+# episode number sits straight in the map), refs end at , or }
+mm_mem() {
+    _mmq_v="${1#*"\"$2\":"}"
+    [ "$_mmq_v" = "$1" ] && return 1
+    _mmq_v="${_mmq_v%%,*}"
+    _mmq_v="${_mmq_v%%\}*}"
+    case "$_mmq_v" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    printf "%s" "$_mmq_v"
+}
+
 mm_ref() {
     _mr_ref="$(mm_member "$1" "$3")"
     case "$_mr_ref" in '' | *[!0-9]*) return 1 ;;
@@ -359,6 +374,12 @@ mm_list() {
 
 mm_value() {
     sed -e 's|^null$||' -e 's|^"||' -e 's|"$||' -e 's|\\n| |g' -e 's|\\r| |g' -e 's|\\t| |g'
+}
+
+# batch slot reader: line numbers of a flat slot file, from mm_list-style refs
+# ("2 11 18" -> "-e 2p -e 11p -e 18p"); callers feed the refs list once
+mm_prog() {
+    mm_list "$1" | sed -e '/[0-9]/!d' -e 's|.*|-e &p|'
 }
 
 mm_chunk() {
@@ -386,6 +407,38 @@ miruro_map_write() {
     fi
     printf "%s\t%s\t%s\t%s\n" "$1" "${2:-}" "${3:-}" "${4:-}" >>"$_mw_tmp"
     mv "$_mw_tmp" "$miruro_map"
+}
+
+# stream hosts that kept failing are skipped: inside a walk via _mm_hosts,
+# across walks via $miruro_map.hosts ("epoch host" per line, kept 6 hours)
+mm_hosts_load() {
+    [ -n "$miruro_map" ] && [ -f "$miruro_map.hosts" ] || return 0
+    _mh_now="$(date +%s)"
+    while IFS=" " read -r _mh_ep _mh_host; do
+        case "$_mh_ep" in '' | *[!0-9]*) continue ;; esac
+        case "$_mh_host" in '' | *' '*) continue ;; esac
+        [ "$((_mh_now - _mh_ep))" -lt 21600 ] || continue
+        case " ${_mm_hosts:-} " in *" $_mh_host "*) continue ;; esac
+        _mm_hosts="$_mm_hosts $_mh_host"
+    done <"$miruro_map.hosts"
+}
+
+mm_hosts_note() { # a playlist that went nowhere: skip its host for the rest of this walk
+    case "$1" in '') return 0 ;; esac
+    case " ${_mm_hosts:-} " in *" $1 "*) return 0 ;; esac
+    _mm_hosts="$_mm_hosts $1"
+    case "${_mm_new:-}" in *" $1 "*) return 0 ;; esac
+    _mm_new="$_mm_new $1"
+}
+
+# persist the walked-away hosts once some other source still served the episode
+mm_hosts_commit() {
+    [ -n "$miruro_map" ] && [ -n "${_mm_new:-}" ] || return 0
+    _mh_now="$(date +%s)"
+    for _mh in $_mm_new; do
+        printf "%s %s\n" "$_mh_now" "$_mh" >>"$miruro_map.hosts" 2>/dev/null || return 0
+    done
+    _mm_new=""
 }
 
 miruro_al_titles() {
@@ -544,11 +597,24 @@ miruro_episodes() {
     esac
     _mm_root="$(mm_slot 0 "$_mm_slots")"
     _mm_eps="$(mm_ref "$_mm_root" "$_mm_slots" episodes)" || die "miruro: no episode roster"
-    for _mm_epref in $(mm_list "$_mm_eps"); do
-        _mm_ep="$(mm_slot "$_mm_epref" "$_mm_slots")"
-        _mm_no="$(mm_ref "$_mm_ep" "$_mm_slots" number | mm_value 2>/dev/null)"
-        case "$_mm_no" in '' | 0 | *[!0-9]*) continue ;;
-        esac
+    # rosters run past 1000 entries; batch everything — a shifted slot sheet
+    # (tail drops the root slot so line N = slot N), two sed batch passes, and
+    # fork-free member reads; nothing runs once per episode
+    _mm_sheet="$(mktemp "${TMPDIR:-/tmp}/mm-sheet-XXXXXX")"
+    miruro_tmps="$miruro_tmps $_mm_sheet"
+    tail -n +2 "$_mm_slots" >"$_mm_sheet"
+    _mm_prog="$(mm_prog "$_mm_eps")"
+    #shellcheck disable=SC2086
+    _mm_nodes="$(sed -n $_mm_prog "$_mm_sheet")"
+    _mm_refs="$(printf "%s\n" "$_mm_nodes" | while IFS= read -r _mm_ep; do
+        _mm_no="$(mm_mem "$_mm_ep" number)" || continue
+        printf "%s\n" "$_mm_no"
+    done)"
+    _mm_prog="$(mm_prog "$_mm_refs")"
+    #shellcheck disable=SC2086
+    _mm_nos="$(sed -n $_mm_prog "$_mm_sheet")"
+    printf "%s\n" "$_mm_nos" | while IFS= read -r _mm_no; do
+        case "$_mm_no" in '' | 0 | *[!0-9]*) continue ;; esac
         printf "%s\t%s\n" "$_mm_no" "$_mm_no"
     done | sort -n
 }
@@ -624,63 +690,123 @@ miruro_media() { # $1 = ep_no, $2 = mode
             case " $_mm_names " in *" $_mm_pname "*) ;; *) _mm_names="$_mm_names $_mm_pname" ;; esac
         done
     done
-    # hard-sub first when a sub request names it: the outer pool loop runs a
-    # sub sweep over every provider before touching the soft-sub pool (dub
-    # keeps its single pool); a second pass only relaxes the animepahe
-    # server exclusion when both sweeps found nothing
-    _mm_pahe=""
-    for _mm_pass in 1 2; do
-        for _mm_pool in $_mm_wanted; do
-            for _mm_name in $_mm_names; do
-                for _mm_trackref in $(mm_list "$_mm_tracks"); do
-                    _mm_track="$(mm_slot "$_mm_trackref" "$_mm_slots")"
-                    [ "$(mm_ref "$_mm_track" "$_mm_slots" track | mm_value 2>/dev/null)" = "$_mm_pool" ] || continue
-                    _mm_provs="$(mm_ref "$_mm_track" "$_mm_slots" providers)" || continue
-                    for _mm_provref in $(mm_list "$_mm_provs"); do
-                        _mm_prov="$(mm_slot "$_mm_provref" "$_mm_slots")"
-                        [ "$(mm_ref "$_mm_prov" "$_mm_slots" provider | mm_value 2>/dev/null)" = "$_mm_name" ] || continue
-                        _mm_prov_sub=""
-                        [ "$_mm_pool" = "ssub" ] && _mm_prov_sub="$(miruro_sub_pick "$_mm_prov" "$_mm_slots")"
-                        _mm_servers="$(mm_ref "$_mm_prov" "$_mm_slots" servers)" || continue
-                        for _mm_srvref in $(mm_list "$_mm_servers"); do
-                            _mm_srv="$(mm_slot "$_mm_srvref" "$_mm_slots")"
-                            _mm_sname="$(mm_ref "$_mm_srv" "$_mm_slots" server | mm_value 2>/dev/null)"
-                            case "$(printf "%s" "${_mm_sname:-}" | tr '[:upper:]' '[:lower:]')" in
-                                *animepahe* | *pahe*)
-                                    [ "$_mm_pass" = 2 ] || continue
-                                    [ -n "$_mm_pahe" ] || _mm_pahe=1
-                                    ;;
+    # flatten once: one "name|pool|provref|srvref|sname" item per provider
+    # server, so every preference pass below is a cheap case scan and the
+    # upstream provider order survives the sweep
+    _mm_items=""
+    for _mm_trackref in $(mm_list "$_mm_tracks"); do
+        _mm_track="$(mm_slot "$_mm_trackref" "$_mm_slots")"
+        _mm_pool="$(mm_ref "$_mm_track" "$_mm_slots" track | mm_value 2>/dev/null)"
+        case " $_mm_wanted " in *" $_mm_pool "*) ;; *) continue ;; esac
+        _mm_provs="$(mm_ref "$_mm_track" "$_mm_slots" providers)" || continue
+        for _mm_provref in $(mm_list "$_mm_provs"); do
+            _mm_prov="$(mm_slot "$_mm_provref" "$_mm_slots")"
+            _mm_pname="$(mm_ref "$_mm_prov" "$_mm_slots" provider | mm_value 2>/dev/null)"
+            case "$_mm_pname" in '') continue ;; esac
+            _mm_servers="$(mm_ref "$_mm_prov" "$_mm_slots" servers)" || continue
+            for _mm_srvref in $(mm_list "$_mm_servers"); do
+                _mm_srv="$(mm_slot "$_mm_srvref" "$_mm_slots")"
+                _mm_sname="$(mm_ref "$_mm_srv" "$_mm_slots" server | mm_value 2>/dev/null)"
+                case "$_mm_sname" in '' | *' '*) continue ;; esac
+                _mm_items="$_mm_items
+$_mm_pname|$_mm_pool|$_mm_provref|$_mm_srvref|$_mm_sname"
+            done
+        done
+    done
+
+    # hard-sub first when a sub request names it: every pool is swept before
+    # the next one starts, and each pool sweeps Vidstream-2 servers first, so
+    # the soft-sub Vidstream-2 never outranks a working hard-sub source (dub
+    # keeps its single pool). the animepahe servers stay locked out until a
+    # final pass over every pool runs as the absolute last resort. playlist
+    # fetches go single-shot; hosts that just failed are skipped for the rest
+    # of the walk instead of being re-burned by later passes
+    _mf_max=1
+    _mm_hosts=""
+    _mm_new=""
+    mm_hosts_load
+    _mm_ladder="first:1 first:2"
+    case "$_mm_wanted" in
+        *" ssub"*) _mm_ladder="$_mm_ladder ssub:1 ssub:2" ;;
+    esac
+    _mm_ladder="$_mm_ladder any:3"
+    for _mm_stage in $_mm_ladder; do
+        _mm_scope="${_mm_stage%%:*}"
+        _mm_pass="${_mm_stage##*:}"
+        for _mm_name in $_mm_names; do
+            for _mm_item in $_mm_items; do
+                case "$_mm_item" in "$_mm_name|"*) ;; *) continue ;; esac
+                _mm_rest="${_mm_item#*|}"
+                _mm_pool="${_mm_rest%%|*}"
+                case "$_mm_scope" in
+                    first) [ "$_mm_pool" = "${_mm_wanted%% *}" ] || continue ;;
+                    ssub) [ "$_mm_pool" = "ssub" ] || continue ;;
+                esac
+                _mm_rest="${_mm_rest#*|}"
+                _mm_provref="${_mm_rest%%|*}"
+                _mm_rest="${_mm_rest#*|}"
+                _mm_srvref="${_mm_rest%%|*}"
+                _mm_slow="$_mm_rest"
+                case "$_mm_slow" in
+                    *animepahe* | *pahe*) [ "$_mm_pass" = 3 ] || continue ;;
+                    *) [ "$_mm_pass" = 3 ] && continue ;;
+                esac
+                case "$_mm_slow" in
+                    *vidstream-2*) [ "$_mm_pass" = 1 ] || continue ;;
+                    *) [ "$_mm_pass" = 1 ] && continue ;;
+                esac
+                _mm_prov="$(mm_slot "$_mm_provref" "$_mm_slots")"
+                _mm_srv="$(mm_slot "$_mm_srvref" "$_mm_slots")"
+                _mm_streams="$(mm_ref "$_mm_srv" "$_mm_slots" streams)" || continue
+                # a headers member that is an explicit null means no referer,
+                # not a server to skip
+                refr=""
+                _mm_headers="$(mm_ref "$_mm_srv" "$_mm_slots" headers)"
+                case "$_mm_headers" in
+                    '{'*)
+                        _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Referer | mm_value 2>/dev/null)"
+                        [ -z "${_mm_refr:-}" ] && _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Origin | mm_value 2>/dev/null)"
+                        refr="${_mm_refr:-}"
+                        ;;
+                esac
+                for _mm_stref in $(mm_list "$_mm_streams"); do
+                    _mm_stream="$(mm_slot "$_mm_stref" "$_mm_slots")"
+                    _mm_url="$(mm_ref "$_mm_stream" "$_mm_slots" url | mm_value 2>/dev/null)"
+                    case "$_mm_url" in http*) ;; *) continue ;;
+                    esac
+                    _mm_probe="${_mm_url#*://}"
+                    _mm_host="${_mm_probe%%/*}"
+                    _mm_host="${_mm_host%%:*}"
+                    case " $_mm_hosts " in *" $_mm_host "*) continue ;; esac
+                    case "$_mm_host" in *.shiora.top | shiora.top) continue ;;
+                    esac
+                    _mm_fmt="$(mm_ref "$_mm_stream" "$_mm_slots" format | mm_value 2>/dev/null)"
+                    case "$_mm_fmt$_mm_url" in
+                        *".mp4"* | *mp4*)
+                            links="default >$_mm_url"
+                            sub_link=""
+                            case "$_mm_pool" in
+                                ssub) sub_link="$(miruro_sub_pick "$_mm_prov" "$_mm_slots")" ;;
                             esac
-                            _mm_streams="$(mm_ref "$_mm_srv" "$_mm_slots" streams)" || continue
-                            _mm_headers="$(mm_ref "$_mm_srv" "$_mm_slots" headers)" || continue
-                            _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Referer | mm_value 2>/dev/null)"
-                            [ -z "${_mm_refr:-}" ] && _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Origin | mm_value 2>/dev/null)"
-                            refr="${_mm_refr:-}"
-                            for _mm_stref in $(mm_list "$_mm_streams"); do
-                                _mm_stream="$(mm_slot "$_mm_stref" "$_mm_slots")"
-                                _mm_url="$(mm_ref "$_mm_stream" "$_mm_slots" url | mm_value 2>/dev/null)"
-                                case "$_mm_url" in http*) ;; *) continue ;;
-                                esac
-                                _mm_host="$(printf "%s" "$_mm_url" | sed -E 's|^[a-zA-Z0-9]*://||; s|/.*||; s|:.*||')"
-                                case "$_mm_host" in *.shiora.top | shiora.top) continue ;;
-                                esac
-                                _mm_fmt="$(mm_ref "$_mm_stream" "$_mm_slots" format | mm_value 2>/dev/null)"
-                                case "$_mm_fmt$_mm_url" in
-                                    *".mp4"* | *mp4*)
-                                        links="default >$_mm_url"
-                                        sub_link="$_mm_prov_sub"
-                                        return 0
-                                        ;;
-                                    *hls* | *".m3u8"*) ;;
-                                    *) continue ;;
-                                esac
-                                if m3u8_parse "$(miruro_fetch "$_mm_url" -e "$refr")" "$_mm_url"; then
-                                    sub_link="$_mm_prov_sub"
-                                    return 0
-                                fi
-                            done
-                        done
-                    done
+                            mm_hosts_commit
+                            return 0
+                            ;;
+                        *hls* | *".m3u8"*) ;;
+                        *) continue ;;
+                    esac
+                    _mm_pl="$(miruro_fetch "$_mm_url" -e "$refr")" || {
+                        mm_hosts_note "$_mm_host"
+                        continue
+                    }
+                    if m3u8_parse "$_mm_pl" "$_mm_url"; then
+                        sub_link=""
+                        case "$_mm_pool" in
+                            ssub) sub_link="$(miruro_sub_pick "$_mm_prov" "$_mm_slots")" ;;
+                        esac
+                        mm_hosts_commit
+                        return 0
+                    fi
+                    mm_hosts_note "$_mm_host"
                 done
             done
         done
@@ -867,6 +993,18 @@ play_episode() {
     [ "$skip_intro" = 1 ] && [ -n "$mal_id" ] && skip_flag="$(ani-skip -i "$mal_id" -e "$canon_ep_no")"
     # wait for the previous player to close (in range selection)
     wait
+    # extension-less playlist hosts (the /cdn/<hex> style) lie about the mime
+    # type; new ffmpeg probes then treat the playlist as a lone image and the
+    # mpv family loads forever. force the hls demuxer for such links
+    _dmx=""
+    _dmx_iina=""
+    case "$video_link" in
+        *".mp4"* | *".m3u8"*) : ;;
+        *)
+            _dmx="--demuxer=lavf --demuxer-lavf-format=hls"
+            _dmx_iina="--mpv-demuxer=lavf --mpv-demuxer-lavf-format=hls"
+            ;;
+    esac
     # shellcheck disable=SC2086
     case "$player_function" in
         debug) printf "All links:\n%s\nSelected link:\n%s\nSubtitles:\n%s\n" "$links" "$video_link" "$sub_link" ;;
@@ -875,9 +1013,9 @@ play_episode() {
         *flatpak*mpv*) flatpak run io.mpv.Mpv --referrer="$refr" ${sub_link:+--sub-file="$sub_link"} $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 & ;;
         *mpv*)
             if [ "$no_detach" = 0 ]; then
-                nohup $player_function --referrer="$refr" ${sub_link:+--sub-file="$sub_link"} $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --referrer="$refr" ${sub_link:+--sub-file="$sub_link"} $_dmx $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             else
-                $player_function --referrer="$refr" ${sub_link:+--sub-file="$sub_link"} $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link"
+                $player_function --referrer="$refr" ${sub_link:+--sub-file="$sub_link"} $_dmx $skip_flag $player_extra_flags --force-media-title="${anime_title} Episode ${ep_no}" "$video_link"
                 mpv_exitcode=$?
                 [ "$exit_after_play" = 1 ] && [ -z "$_range" ] && exit "$mpv_exitcode"
             fi
@@ -887,9 +1025,9 @@ play_episode() {
             _sub_iina="$(printf "%s" "$sub_link" | sed 's|:|\\:|g')"
             if pgrep -f "IINA" >/dev/null 2>&1; then
                 # omit --keep-running when an IINA instance exists to prevent hanging
-                nohup $player_function --mpv-referrer="$refr" ${_sub_iina:+--mpv-sub-files="$_sub_iina"} $player_extra_flags --no-stdin --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --mpv-referrer="$refr" ${_sub_iina:+--mpv-sub-files="$_sub_iina"} $_dmx_iina $player_extra_flags --no-stdin --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             else
-                nohup $player_function --mpv-referrer="$refr" ${_sub_iina:+--mpv-sub-files="$_sub_iina"} $player_extra_flags --no-stdin --keep-running --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
+                nohup $player_function --mpv-referrer="$refr" ${_sub_iina:+--mpv-sub-files="$_sub_iina"} $_dmx_iina $player_extra_flags --no-stdin --keep-running --mpv-force-media-title="${anime_title} Episode ${ep_no}" "$video_link" >/dev/null 2>&1 &
             fi
             ;;
         *vlc*) nohup $player_function --http-referrer="$refr" $player_extra_flags --play-and-exit --meta-title="${anime_title} Episode ${ep_no}" "$video_link" ${sub_link:+:input-slave="$sub_link"} >/dev/null 2>&1 & ;;
