@@ -233,7 +233,16 @@ m3u8_parse() {
         ;;
     esac
     if printf "%s" "$1" | grep -q "#EXT-X-STREAM-INF"; then
-        links="$(printf "%s\n" "$1" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d' | sed "\|>https*://|!s|>|>${2%/*}/|" | sort -g -r -s)"
+        # per RFC 3986: an absolute URL passes through, an absolute path
+        # (/x) sits under the master's scheme://host, and a relative one
+        # under the master's directory
+        _m3u8_root="${2%%://*}://${2#*://}"
+        _m3u8_auth="${2#*://}"                  # host/path?query
+        _m3u8_auth="${_m3u8_auth%%/*}"          # host
+        _m3u8_root="${2%%://*}://${_m3u8_auth}" # scheme://host
+        links="$(printf "%s\n" "$1" | sed 's|^#EXT-X-STREAM.*x||g; s|,.*|p|g; /^#/d; $!N; s|\n| >|;/EXT-X-I-FRAME/d' | sed \
+            -e "\|>https*://|!s|>\(/[^\" ]*\)|>${_m3u8_root}\1|" \
+            -e "\|>https*://|!s|>|>${2%/*}/|" | sort -g -r -s)"
     elif [ -n "$1" ]; then
         links="default >$2"
     else
@@ -593,7 +602,7 @@ miruro_media() { # $1 = ep_no, $2 = mode
     _mm_order="$(mm_ref "$_mm_root" "$_mm_slots" providerOrder)" || return 1
     case "$2" in
         dub) _mm_wanted="dub" ;;
-        *) _mm_wanted="ssub sub" ;;
+        *) _mm_wanted="sub ssub" ;;
     esac
     _mm_names=""
     for _mm_oidx in $(mm_list "$_mm_order"); do
@@ -615,47 +624,61 @@ miruro_media() { # $1 = ep_no, $2 = mode
             case " $_mm_names " in *" $_mm_pname "*) ;; *) _mm_names="$_mm_names $_mm_pname" ;; esac
         done
     done
-    for _mm_name in $_mm_names; do
+    # hard-sub first when a sub request names it: the outer pool loop runs a
+    # sub sweep over every provider before touching the soft-sub pool (dub
+    # keeps its single pool); a second pass only relaxes the animepahe
+    # server exclusion when both sweeps found nothing
+    _mm_pahe=""
+    for _mm_pass in 1 2; do
         for _mm_pool in $_mm_wanted; do
-            for _mm_trackref in $(mm_list "$_mm_tracks"); do
-                _mm_track="$(mm_slot "$_mm_trackref" "$_mm_slots")"
-                [ "$(mm_ref "$_mm_track" "$_mm_slots" track | mm_value 2>/dev/null)" = "$_mm_pool" ] || continue
-                _mm_provs="$(mm_ref "$_mm_track" "$_mm_slots" providers)" || continue
-                for _mm_provref in $(mm_list "$_mm_provs"); do
-                    _mm_prov="$(mm_slot "$_mm_provref" "$_mm_slots")"
-                    [ "$(mm_ref "$_mm_prov" "$_mm_slots" provider | mm_value 2>/dev/null)" = "$_mm_name" ] || continue
-                    _mm_prov_sub=""
-                    [ "$_mm_pool" = "ssub" ] && _mm_prov_sub="$(miruro_sub_pick "$_mm_prov" "$_mm_slots")"
-                    _mm_servers="$(mm_ref "$_mm_prov" "$_mm_slots" servers)" || continue
-                    for _mm_srvref in $(mm_list "$_mm_servers"); do
-                        _mm_srv="$(mm_slot "$_mm_srvref" "$_mm_slots")"
-                        _mm_streams="$(mm_ref "$_mm_srv" "$_mm_slots" streams)" || continue
-                        _mm_headers="$(mm_ref "$_mm_srv" "$_mm_slots" headers)" || continue
-                        _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Referer | mm_value 2>/dev/null)"
-                        [ -z "${_mm_refr:-}" ] && _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Origin | mm_value 2>/dev/null)"
-                        refr="${_mm_refr:-}"
-                        for _mm_stref in $(mm_list "$_mm_streams"); do
-                            _mm_stream="$(mm_slot "$_mm_stref" "$_mm_slots")"
-                            _mm_url="$(mm_ref "$_mm_stream" "$_mm_slots" url | mm_value 2>/dev/null)"
-                            case "$_mm_url" in http*) ;; *) continue ;;
+            for _mm_name in $_mm_names; do
+                for _mm_trackref in $(mm_list "$_mm_tracks"); do
+                    _mm_track="$(mm_slot "$_mm_trackref" "$_mm_slots")"
+                    [ "$(mm_ref "$_mm_track" "$_mm_slots" track | mm_value 2>/dev/null)" = "$_mm_pool" ] || continue
+                    _mm_provs="$(mm_ref "$_mm_track" "$_mm_slots" providers)" || continue
+                    for _mm_provref in $(mm_list "$_mm_provs"); do
+                        _mm_prov="$(mm_slot "$_mm_provref" "$_mm_slots")"
+                        [ "$(mm_ref "$_mm_prov" "$_mm_slots" provider | mm_value 2>/dev/null)" = "$_mm_name" ] || continue
+                        _mm_prov_sub=""
+                        [ "$_mm_pool" = "ssub" ] && _mm_prov_sub="$(miruro_sub_pick "$_mm_prov" "$_mm_slots")"
+                        _mm_servers="$(mm_ref "$_mm_prov" "$_mm_slots" servers)" || continue
+                        for _mm_srvref in $(mm_list "$_mm_servers"); do
+                            _mm_srv="$(mm_slot "$_mm_srvref" "$_mm_slots")"
+                            _mm_sname="$(mm_ref "$_mm_srv" "$_mm_slots" server | mm_value 2>/dev/null)"
+                            case "$(printf "%s" "${_mm_sname:-}" | tr '[:upper:]' '[:lower:]')" in
+                                *animepahe* | *pahe*)
+                                    [ "$_mm_pass" = 2 ] || continue
+                                    [ -n "$_mm_pahe" ] || _mm_pahe=1
+                                    ;;
                             esac
-                            _mm_host="$(printf "%s" "$_mm_url" | sed -E 's|^[a-zA-Z0-9]*://||; s|/.*||; s|:.*||')"
-                            case "$_mm_host" in *.shiora.top | shiora.top) continue ;;
-                            esac
-                            _mm_fmt="$(mm_ref "$_mm_stream" "$_mm_slots" format | mm_value 2>/dev/null)"
-                            case "$_mm_fmt$_mm_url" in
-                                *".mp4"* | *mp4*)
-                                    links="default >$_mm_url"
+                            _mm_streams="$(mm_ref "$_mm_srv" "$_mm_slots" streams)" || continue
+                            _mm_headers="$(mm_ref "$_mm_srv" "$_mm_slots" headers)" || continue
+                            _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Referer | mm_value 2>/dev/null)"
+                            [ -z "${_mm_refr:-}" ] && _mm_refr="$(mm_ref "$_mm_headers" "$_mm_slots" Origin | mm_value 2>/dev/null)"
+                            refr="${_mm_refr:-}"
+                            for _mm_stref in $(mm_list "$_mm_streams"); do
+                                _mm_stream="$(mm_slot "$_mm_stref" "$_mm_slots")"
+                                _mm_url="$(mm_ref "$_mm_stream" "$_mm_slots" url | mm_value 2>/dev/null)"
+                                case "$_mm_url" in http*) ;; *) continue ;;
+                                esac
+                                _mm_host="$(printf "%s" "$_mm_url" | sed -E 's|^[a-zA-Z0-9]*://||; s|/.*||; s|:.*||')"
+                                case "$_mm_host" in *.shiora.top | shiora.top) continue ;;
+                                esac
+                                _mm_fmt="$(mm_ref "$_mm_stream" "$_mm_slots" format | mm_value 2>/dev/null)"
+                                case "$_mm_fmt$_mm_url" in
+                                    *".mp4"* | *mp4*)
+                                        links="default >$_mm_url"
+                                        sub_link="$_mm_prov_sub"
+                                        return 0
+                                        ;;
+                                    *hls* | *".m3u8"*) ;;
+                                    *) continue ;;
+                                esac
+                                if m3u8_parse "$(miruro_fetch "$_mm_url" -e "$refr")" "$_mm_url"; then
                                     sub_link="$_mm_prov_sub"
                                     return 0
-                                    ;;
-                                *hls* | *".m3u8"*) ;;
-                                *) continue ;;
-                            esac
-                            if m3u8_parse "$(miruro_fetch "$_mm_url" -e "$refr")" "$_mm_url"; then
-                                sub_link="$_mm_prov_sub"
-                                return 0
-                            fi
+                                fi
+                            done
                         done
                     done
                 done
