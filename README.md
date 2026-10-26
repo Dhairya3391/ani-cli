@@ -27,7 +27,7 @@
 </p>
 
 <h3 align="center">
-A cli to browse and watch anime (alone AND with friends). This tool scrapes the site <a href="https://barelystarted.miruro.tv/">miruro</a> (default) with <a href="https://hianime.at/">hianime</a> as a fallback provider (`-p hianime`).
+A cli to browse and watch anime (alone AND with friends). This tool scrapes the site <a href="https://animeheaven.me/">animeheaven</a> (default) with <a href="https://barelystarted.miruro.tv/">miruro</a> and <a href="https://hianime.at/">hianime</a> as fallback providers (`-p miruro`, `-p hianime`).
 </h3>
 
 <h1 align="center">
@@ -592,7 +592,7 @@ Ani-skip uses the external lua script function of mpv and as such â€“ for now â€
 - Can I change subtitle language or turn them off? - Subtitles are a separate english track handed to the player, so you can toggle them there (mpv: press `v`). Other languages are not offered.
 - Can I watch dub? - Yes, use `--dub`.
 - Can I change dub language? - No.
-- Can I change media source? - Yes, use `-p provider`, for example `ani-cli -p hianime one piece`. Supported providers are `miruro` (default) and `hianime`. History is keyed by anilist id, so it carries over when you switch.
+- Can I change media source? - Yes, use `-p provider`, for example `ani-cli -p miruro one piece`. Supported providers are `animeheaven` (default), `miruro`, and `hianime`. History is keyed by anilist id, so it carries over when you switch.
 - Can I use vlc? - Yes, use `--vlc` or `export ANI_CLI_PLAYER=vlc`.
 - Can I adjust resolution? - Yes, use `-q resolution`, for example `ani-cli -q 1080`. The best (highest) available stream is used by default, other values fall back to best.
 - How can I download? - Use `-d`, it will download into your working directory.

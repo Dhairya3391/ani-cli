@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version_number="5.4.0"
+version_number="5.5.0"
 
 # UI
 
@@ -66,7 +66,7 @@ help_info() {
       -q, --quality
         Specify the video quality
       -p, --provider, --source
-        Select provider: hianime (default), miruro
+        Select provider: animeheaven (default), miruro, hianime
       -v, --vlc
         Use VLC to play the video
       -V, --version
@@ -814,6 +814,65 @@ $_mm_pname|$_mm_pool|$_mm_provref|$_mm_srvref|$_mm_sname"
     return 1
 }
 
+animeheaven_fetch() {
+    _ah_tries=0
+    _ah_body=""
+    while :; do
+        if _ah_body="$("$curl_exe" -sL --compressed -A "$agent" --connect-timeout 8 --max-time 15 --retry 3 --retry-all-errors "$@" 2>/dev/null)" && [ -n "$_ah_body" ]; then
+            break
+        fi
+        _ah_tries=$((_ah_tries + 1))
+        [ "$_ah_tries" -ge 4 ] && break
+        sleep 1
+    done
+    [ -n "$_ah_body" ] || return 1
+    printf "%s" "$_ah_body"
+}
+
+animeheaven_search() {
+    _query="$(printf "%s" "$1" | sed 's| |+|g; s|&|%26|g; s|#|%23|g')"
+    _page="$(animeheaven_fetch "$animeheaven_base/search.php?s=$_query")" || return 1
+    printf "%s" "$_page" |
+        sed "s|<div class='similarimg'>|\n&|g" |
+        sed -nE "s|.*<div class='similarname c'><a href='anime\.php\?([^']*)'[^>]*>([^<]*)</a>.*|\1\t\2|p" |
+        sed -e "s|&#039;|'|g" -e 's|&quot;|"|g' -e "s|&amp;|\&|g" -e "s|&apos;|'|g" -e "s|&lt;|<|g" -e "s|&gt;|>|g"
+}
+
+animeheaven_episodes() {
+    _page="$(animeheaven_fetch "$animeheaven_base/anime.php?$1")" || return 1
+    printf "%s" "$_page" |
+        tr '\n' ' ' |
+        sed 's|<a class=.c. id =|\n&|g' |
+        sed -nE 's|.*onclick=[^"]*"([a-f0-9]+)".*watch2[^>]*>[[:space:]]*([^<]+)[[:space:]]*<.*|\1\t\2|p' |
+        sed -E 's|\t0+([1-9])|\t\1|' |
+        sort -k2,2n -s
+}
+
+animeheaven_media() {
+    sub_link=""
+    mal_id=""
+    refr="$animeheaven_base/"
+    [ "$2" = "dub" ] && return 1
+    _rx="$(rxdot "$1")"
+    _ep_key="$(printf "%s\n" "$episode_maps" | sed -nE "s|^([a-f0-9]+)\t${_rx}$|\1|p" | head -n 1)"
+    [ -z "$_ep_key" ] && return 1
+    _slug="${anime_id#*:}"
+    _gate_page="$(animeheaven_fetch -H "Cookie: key=$_ep_key" -e "$animeheaven_base/anime.php?$_slug" "$animeheaven_base/gate.php")" || return 1
+    _sources="$(printf "%s\n" "$_gate_page" | sed -e '/<!--/d' | sed -nE "s|.*<source src='([^']*)'.*|\1|p" | grep -v '&error')"
+    _video=""
+    for _s in $_sources; do
+        case "$_s" in
+            http*video.mp4* | http*mp4*)
+                _video="$_s"
+                break
+                ;;
+            *) ;;
+        esac
+    done
+    [ -z "$_video" ] && return 1
+    links="default >$_video"
+}
+
 # escape regex dots so episode 1.5 never matches 105
 rxdot() { printf "%s" "$1" | sed 's|\.|\\.|g'; }
 
@@ -1086,7 +1145,8 @@ search_api="${base_api}/search?keyword=%s"
 episodes_api="${base_api}/api/theme/episode/list/%s"
 servers_api="${base_api}/api/theme/episode/servers?episodeId=%s"
 miruro_base="https://barelystarted.miruro.tv"
-provider="${ANI_CLI_PROVIDER:-miruro}"
+animeheaven_base="https://animeheaven.me"
+provider="${ANI_CLI_PROVIDER:-animeheaven}"
 ciphers='ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
 tls13_ciphers='TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256'
 agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -1217,8 +1277,8 @@ done
 [ "$menu_program" = "rofi" ] && menu_multi_flag="-multi-select"
 
 case "$provider" in
-    hianime | miruro) ;;
-    *) die "unknown provider: $provider (supported: hianime, miruro)" ;;
+    animeheaven | miruro | hianime) ;;
+    *) die "unknown provider: $provider (supported: animeheaven, miruro, hianime)" ;;
 esac
 
 info "Checking dependencies..."
